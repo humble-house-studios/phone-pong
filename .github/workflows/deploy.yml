@@ -42,13 +42,13 @@ jobs:
           set +e
           godot --headless --export-release "Web" build/web/index.html 2>&1 | tee export.log
           code=${PIPESTATUS[0]}
-          set -e
           # Surface Godot's errors as annotations so they show up without opening the raw log.
-          grep -iE "error|failed|cannot|invalid" export.log | head -20 | while IFS= read -r line; do
-            echo "::error title=Godot export::${line}"
+          { grep -iE "error|failed|cannot|invalid" export.log || true; } | head -20 | while IFS= read -r line; do
+            echo "::warning title=Godot export::${line}"
           done
+          echo "::notice title=Build output::exit=${code}; files: $(ls build/web 2>&1 | tr '\n' ' ')"
           if [ ! -f build/web/index.html ]; then
-            echo "::error title=Godot export::No index.html produced (exit code ${code})"
+            tail -15 export.log | while IFS= read -r line; do echo "::error title=Godot log tail::${line}"; done
             exit 1
           fi
 
