@@ -21,6 +21,11 @@ Every return in a row grows your combo and is worth more points. Hit the ball
 with the middle of your paddle for a PERFECT (double points). Long combos make
 the colours and music go wild. Your best score is saved.
 
+## Testing later stages
+Triple-tap the stage/points box (top corner) to open a hidden test menu: jump
+to the next boss, skip a stage, turn on god mode (no hearts lost) or grab a
+random relic. Runs that use it don't change your saved records.
+
 ## How the pipeline works
 1. Code changes are pushed to the `main` branch.
 2. `.github/workflows/deploy.yml` runs Godot headless in the cloud and exports

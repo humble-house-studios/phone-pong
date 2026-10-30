@@ -145,6 +145,16 @@ var relics: Array[String] = []
 var phoenix_used := false
 var boss_intro := 0.0  # seconds left to show the boss's name
 
+# Hidden test menu: triple-tap the stage/points box. Runs that use it don't
+# count toward saved records.
+const TEST_ITEMS := ["Next boss", "Skip this stage", "God mode", "Random relic", "Close"]
+var test_menu := false
+var test_index := 0
+var god_mode := false
+var cheated := false
+var hud_taps := 0
+var hud_tap_time := 0.0
+
 var landscape := false
 var screen := Vector2(W, H)  # visible area in screen pixels
 var field_rect := Rect2(0, 0, W, H)  # where the field sits on screen
@@ -195,6 +205,19 @@ func _input(event: InputEvent) -> void:
 				_toggle_music()
 				return
 			has_touched = true
+			if test_menu:
+				var item := _test_item_at(local_event.position)
+				if item >= 0:
+					_test_action(item)
+				return
+			if not picking and not game_over and _hud_rect().has_point(local_event.position):
+				hud_taps = hud_taps + 1 if art_time - hud_tap_time < 0.6 else 1
+				hud_tap_time = art_time
+				if hud_taps >= 3:
+					hud_taps = 0
+					test_menu = true
+					test_index = 0
+					return
 			if picking:
 				var card := _card_at(local_event.position)
 				if card >= 0:
@@ -211,9 +234,20 @@ func _input(event: InputEvent) -> void:
 		touch_target = _to_field(local_pos).x
 		if picking and _card_at(local_pos) >= 0:
 			pick_index = _card_at(local_pos)
+		if test_menu and _test_item_at(local_pos) >= 0:
+			test_index = _test_item_at(local_pos)
 
-	# Keyboard / gamepad for the upgrade cards and restarting.
-	if picking:
+	# Keyboard / gamepad for the menus and restarting.
+	if test_menu:
+		if event.is_action_pressed("ui_up"):
+			test_index = posmod(test_index - 1, TEST_ITEMS.size())
+		elif event.is_action_pressed("ui_down"):
+			test_index = posmod(test_index + 1, TEST_ITEMS.size())
+		elif event.is_action_pressed("ui_accept"):
+			_test_action(test_index)
+		elif event.is_action_pressed("ui_cancel"):
+			test_menu = false
+	elif picking:
 		if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
 			pick_index = posmod(pick_index - 1, offers.size())
 		elif event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
@@ -231,7 +265,7 @@ func _process(delta: float) -> void:
 	_move_player(delta)
 	_move_ai(delta)
 
-	if game_over or picking:
+	if game_over or picking or test_menu:
 		queue_redraw()
 		return
 
@@ -295,7 +329,8 @@ func _process(delta: float) -> void:
 	if ball_pos.y > H + BALL_R:
 		_burst(Vector2(ball_pos.x, H - 10.0), COLOR_AI, 40)
 		score_ai += 1
-		hearts -= 1
+		if not god_mode:
+			hearts -= 1
 		if combo >= 3:
 			_popup("COMBO LOST", Vector2(W / 2.0, H - 260.0), Color.WHITE)
 		combo = 0
@@ -376,7 +411,7 @@ func _after_point(next_serve_dir: float) -> void:
 		game_over = true
 		input_lock = 0.8
 		_set_music_volume(MUSIC_VOLUME_DB - 14.0)
-		if points > best or stage > best_stage:
+		if not cheated and (points > best or stage > best_stage):
 			new_best = points > best
 			best = maxi(best, points)
 			best_stage = maxi(best_stage, stage)
@@ -397,6 +432,7 @@ func _restart() -> void:
 	levels.clear()
 	relics.clear()
 	phoenix_used = false
+	cheated = god_mode
 	_start_stage()
 	_set_music_volume(MUSIC_VOLUME_DB)
 
@@ -493,6 +529,88 @@ func _start_stage() -> void:
 		boss_intro = 2.0
 	else:
 		_popup("STAGE %d" % stage, Vector2(W / 2.0, H / 2.0 + 260.0), Color.WHITE)
+
+
+# --- Test menu ---------------------------------------------------------------
+
+func _hud_rect() -> Rect2:
+	return Rect2(screen.x - 390.0 if landscape else 10.0, 14.0, 380.0, 80.0)
+
+
+func _test_item_rects() -> Array[Rect2]:
+	var rects: Array[Rect2] = []
+	var size := Vector2(520, 96)
+	var gap := 112.0
+	for i in TEST_ITEMS.size():
+		var center := screen / 2.0 + Vector2(0.0, (i - (TEST_ITEMS.size() - 1) / 2.0) * gap + 30.0)
+		rects.append(Rect2(center - size / 2.0, size))
+	return rects
+
+
+func _test_item_at(point: Vector2) -> int:
+	var rects := _test_item_rects()
+	for i in rects.size():
+		if rects[i].has_point(point):
+			return i
+	return -1
+
+
+func _test_action(index: int) -> void:
+	match index:
+		0:  # Jump to the next boss, picking up one random upgrade per skipped stage.
+			var target := (stage / BOSS_EVERY + 1) * BOSS_EVERY
+			while stage < target - 1:
+				var pool: Array[String] = []
+				for id in UPGRADES:
+					if _can_offer(id):
+						pool.append(id)
+				if not pool.is_empty():
+					var id: String = pool.pick_random()
+					match id:
+						"heart":
+							hearts += 1
+						"shield":
+							shields += 1
+						_:
+							levels[id] = levels.get(id, 0) + 1
+				stage += 1
+			stage = target
+			_start_stage()
+		1:  # Win this stage straight away and go to the pick screen.
+			score_player = _stage_target()
+			_after_point(-1.0)
+		2:
+			# Leave the menu open so the new ON/OFF state is visible.
+			god_mode = not god_mode
+			cheated = cheated or god_mode
+			return
+		3:
+			var pool: Array[String] = []
+			for id in RELICS:
+				if not _has(id):
+					pool.append(id)
+			if not pool.is_empty():
+				relics.append(pool.pick_random())
+		4:
+			pass
+	if index != 4:
+		cheated = true
+	test_menu = false
+
+
+func _draw_test_menu() -> void:
+	draw_rect(Rect2(Vector2.ZERO, screen), Color(0, 0, 0, 0.7))
+	var rects := _test_item_rects()
+	_draw_label("TEST MENU", rects[0].position.y - 40.0, 48, Color.WHITE)
+	for i in rects.size():
+		var rect := rects[i]
+		if i == test_index:
+			draw_rect(rect.grow(PX), _rainbow(0.0))
+		_draw_block(rect, Color(0.08, 0.04, 0.16, 0.95))
+		var text: String = TEST_ITEMS[i]
+		if i == 2:
+			text = "God mode: %s" % ("ON" if god_mode else "OFF")
+		_draw_fitted(text, rect, 0.64, 36, Color.WHITE)
 
 
 func _is_boss() -> bool:
@@ -893,6 +1011,8 @@ func _draw() -> void:
 	# Stage, points and hearts share one box.
 	var hud_x := screen.x - 390.0 if landscape else 10.0
 	draw_rect(Rect2(hud_x, 14, 380, 50), Color(0, 0, 0, 0.55))
+	if god_mode:
+		draw_string(font, Vector2(hud_x + 300.0, 92.0), "GOD", HORIZONTAL_ALIGNMENT_RIGHT, 70, 22, COLOR_PLAYER)
 	draw_string(font, Vector2(hud_x + 14.0, 50.0), "ST %d  PTS %d" % [stage, points],
 		HORIZONTAL_ALIGNMENT_LEFT, 220, 26, Color(1, 1, 1, 0.9))
 	var heart_x := hud_x + 226.0
@@ -935,9 +1055,14 @@ func _draw() -> void:
 		else:
 			_draw_label("BEST %d  -  STAGE %d" % [best, best_stage], cy + 200.0, 40, Color.WHITE)
 		_draw_label("Tap to play again", cy + 300.0, 40, Color.WHITE)
+		if cheated:
+			_draw_label("Test run - records not saved", cy + 380.0, 30, Color(1, 1, 1, 0.7))
 	elif boss_intro > 0.0:
 		var info: Array = BOSSES[_boss()]
 		_draw_label("BOSS: %s" % info[0], cy + 150.0, 56, COLOR_AI.lightened(0.2))
 		_draw_label(info[1], cy + 215.0, 34, Color.WHITE)
 	elif not has_touched:
 		_draw_label("Drag to move", field_rect.end.y - (120.0 if landscape else 220.0), 40, Color.WHITE)
+
+	if test_menu:
+		_draw_test_menu()
