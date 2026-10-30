@@ -77,7 +77,5 @@ game repo, including Yes And.
   (this game: https://humble-house-studios.github.io/phone-pong/).
 - He works from his phone and is new to code: explain results in plain words,
   keep replies short, and handle git, builds and fixes yourself.
-- End every reply with the play link:
-  https://humble-house-studios.github.io/phone-pong/
 - When he needs to sign in, create an account or tap a setting, give him the
   exact link and the exact option to choose.
