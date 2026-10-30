@@ -1,7 +1,10 @@
 extends Node2D
-## Vertical Pong built for a phone held upright.
-## You are the yellow paddle at the bottom: drag anywhere to move it.
-## Arrow keys also work on a computer. First to 7 wins.
+## Pong built for a phone held upright, that turns sideways on wide screens.
+## You are the yellow paddle at the bottom (or on the left when sideways):
+## drag anywhere, or move the mouse, to move it. Arrow keys work too.
+## First to 7 wins.
+## The game logic always runs in an upright 720x1280 "field"; on a wide
+## screen the field is simply drawn rotated, and input is rotated back.
 ## Every return builds a combo worth more points; middle-of-paddle hits are
 ## PERFECT and score double. Beat your best: it is saved between games.
 
@@ -23,7 +26,6 @@ const WIN_SCORE := 7
 const MUSIC_FRAMES := 302400  # printed by tools/make_audio.py
 const MUSIC_VOLUME_DB := -6.0
 const SFX_NAMES := ["hit_player", "hit_cpu", "wall", "score_player", "score_cpu", "win", "lose"]
-const MUTE_RECT := Rect2(W - 230.0, 0.0, 230.0, 70.0)
 
 const COLOR_PLAYER := Color("#ffd166")
 const COLOR_AI := Color("#ef476f")
@@ -82,6 +84,11 @@ var best := 0
 var combo := 0
 var new_best := false
 
+var landscape := false
+var screen := Vector2(W, H)  # visible area in screen pixels
+var field_rect := Rect2(0, 0, W, H)  # where the field sits on screen
+var field_xform := Transform2D.IDENTITY  # field coordinates -> screen
+
 
 func _ready() -> void:
 	# Swirling pixel plasma drawn behind everything else.
@@ -94,6 +101,8 @@ func _ready() -> void:
 	backdrop.show_behind_parent = true
 	add_child(backdrop)
 	_load_best()
+	_update_layout()
+	get_tree().root.size_changed.connect(_update_layout)
 
 	for key in SFX_NAMES:
 		var player := AudioStreamPlayer.new()
@@ -121,14 +130,17 @@ func _input(event: InputEvent) -> void:
 	if event is InputEventScreenTouch or event is InputEventScreenDrag:
 		var local_event := make_input_local(event)
 		if event is InputEventScreenTouch and event.pressed:
-			if MUTE_RECT.has_point(local_event.position):
+			if _mute_rect().has_point(local_event.position):
 				_toggle_music()
 				return
 			has_touched = true
 			if game_over:
 				_restart()
 				return
-		touch_target = local_event.position.x
+		touch_target = _to_field(local_event.position).x
+	elif event is InputEventMouseMotion:
+		# On a computer the paddle follows the mouse without needing a click.
+		touch_target = _to_field(make_input_local(event).position).x
 
 
 func _process(delta: float) -> void:
@@ -192,12 +204,12 @@ func _process(delta: float) -> void:
 
 
 func _move_player(delta: float) -> void:
-	if Input.is_action_pressed("ui_left"):
+	# Sideways, the paddle runs up and down the screen.
+	var axis := Input.get_axis("ui_up", "ui_down") if landscape \
+		else Input.get_axis("ui_left", "ui_right")
+	if axis != 0.0:
 		touch_target = -1.0
-		player_x -= KEY_SPEED * delta
-	elif Input.is_action_pressed("ui_right"):
-		touch_target = -1.0
-		player_x += KEY_SPEED * delta
+		player_x += axis * KEY_SPEED * delta
 	elif touch_target >= 0.0:
 		player_x = move_toward(player_x, touch_target, FOLLOW_SPEED * delta)
 	player_x = clampf(player_x, PADDLE_SIZE.x / 2.0, W - PADDLE_SIZE.x / 2.0)
@@ -273,7 +285,7 @@ func _on_player_return() -> void:
 	combo += 1
 	var gain := combo
 	var offset := absf(ball_pos.x - player_x) / (PADDLE_SIZE.x / 2.0)
-	var at := Vector2(player_x, PLAYER_Y - 70.0)
+	var at := Vector2(player_x, PLAYER_Y - 90.0)
 	if offset <= PERFECT_ZONE:
 		gain *= 2
 		_popup("PERFECT +%d" % gain, at, _rainbow(0.0).lightened(0.3))
@@ -290,7 +302,7 @@ func _trip() -> float:
 
 
 func _popup(text: String, at: Vector2, color: Color) -> void:
-	popups.append({"text": text, "pos": at, "life": 0.9, "color": color})
+	popups.append({"text": text, "pos": at, "rise": 0.0, "life": 0.9, "color": color})
 
 
 func _load_best() -> void:
@@ -306,6 +318,43 @@ func _save_best() -> void:
 	cfg.set_value("meta", "save_version", SAVE_VERSION)
 	cfg.set_value("stats", "best", best)
 	cfg.save(SAVE_PATH)
+
+
+# --- Layout ----------------------------------------------------------------
+
+func _update_layout() -> void:
+	# Wider than tall (monitor, Steam Deck, phone on its side): play sideways.
+	var window := get_window()
+	var real := Vector2(window.size)
+	if real.x <= 0.0 or real.y <= 0.0:
+		return
+	landscape = real.x > real.y
+	var base := Vector2(H, W) if landscape else Vector2(W, H)
+	if window.content_scale_size != Vector2i(base):
+		window.content_scale_size = Vector2i(base)
+	# Stretch aspect "expand": the base area always fits, extra space is added around it.
+	screen = real / minf(real.x / base.x, real.y / base.y)
+	field_rect = Rect2(_snap((screen - base) / 2.0), base)
+	if landscape:
+		# Field "down" (toward the player) points left; field "right" points down.
+		field_xform = Transform2D(Vector2(0, 1), Vector2(-1, 0), field_rect.position + Vector2(H, 0))
+	else:
+		field_xform = Transform2D(Vector2(1, 0), Vector2(0, 1), field_rect.position)
+	backdrop.size = screen
+	(backdrop.material as ShaderMaterial).set_shader_parameter("screen_size", screen)
+	queue_redraw()
+
+
+func _to_field(point: Vector2) -> Vector2:
+	return field_xform.affine_inverse() * point
+
+
+func _to_screen(point: Vector2) -> Vector2:
+	return field_xform * point
+
+
+func _mute_rect() -> Rect2:
+	return Rect2(screen.x - 230.0, 0.0, 230.0, 70.0)
 
 
 # --- Audio -----------------------------------------------------------------
@@ -362,7 +411,7 @@ func _update_art(delta: float) -> void:
 	mat.set_shader_parameter("trip", trip)
 
 	for popup in popups:
-		popup.pos += Vector2(0, -90.0 * delta)
+		popup.rise += 90.0 * delta
 		popup.life -= delta
 	popups = popups.filter(func(popup): return popup.life > 0.0)
 
@@ -447,24 +496,39 @@ func _draw_number(value: int, center: Vector2, cell: float, color: Color) -> voi
 func _draw_label(text: String, y: float, size: int, color: Color) -> void:
 	# Dark band behind text so it stays readable over the plasma.
 	var font := ThemeDB.fallback_font
-	draw_rect(Rect2(0, y - size * 1.05, W, size * 1.45), Color(0, 0, 0, 0.6))
-	draw_string(font, Vector2(0, y), text, HORIZONTAL_ALIGNMENT_CENTER, W, size, color)
+	draw_rect(Rect2(0, y - size * 1.05, screen.x, size * 1.45), Color(0, 0, 0, 0.6))
+	draw_string(font, Vector2(0, y), text, HORIZONTAL_ALIGNMENT_CENTER, screen.x, size, color)
+
+
+func _draw_centered(text: String, center: Vector2, size: int, color: Color) -> void:
+	var font := ThemeDB.fallback_font
+	draw_string(font, center + Vector2(-200.0 + 3.0, 3.0), text,
+		HORIZONTAL_ALIGNMENT_CENTER, 400.0, size, Color(0, 0, 0, color.a))
+	draw_string(font, center - Vector2(200.0, 0.0), text,
+		HORIZONTAL_ALIGNMENT_CENTER, 400.0, size, color)
 
 
 func _draw() -> void:
+	# Dim anything outside the field, so the walls are clear on odd screen shapes.
+	var dim := Color(0, 0, 0, 0.5)
+	draw_rect(Rect2(0, 0, field_rect.position.x, screen.y), dim)
+	draw_rect(Rect2(field_rect.end.x, 0, screen.x - field_rect.end.x, screen.y), dim)
+	draw_rect(Rect2(field_rect.position.x, 0, field_rect.size.x, field_rect.position.y), dim)
+	draw_rect(Rect2(field_rect.position.x, field_rect.end.y,
+		field_rect.size.x, screen.y - field_rect.end.y), dim)
+
+	# Everything in the field is drawn in field coordinates.
+	var xform := field_xform
 	if shake > 0.0:
 		var amount := shake * 40.0
-		draw_set_transform(_snap(Vector2(randf_range(-amount, amount), randf_range(-amount, amount))))
+		xform.origin += _snap(Vector2(randf_range(-amount, amount), randf_range(-amount, amount)))
+	draw_set_transform_matrix(xform)
 
 	# Center line
 	var x := 0.0
 	while x < W:
 		_draw_block(Rect2(x + 8.0, H / 2.0 - PX / 2.0, 24.0, PX), Color(1, 1, 1, 0.7))
 		x += 48.0
-
-	# Scores
-	_draw_number(score_ai, Vector2(W / 2.0, H / 2.0 - 110.0), 16.0, COLOR_AI)
-	_draw_number(score_player, Vector2(W / 2.0, H / 2.0 + 110.0), 16.0, COLOR_PLAYER)
 
 	# Paddles, sparks and ball
 	_draw_paddle(ai_x, AI_Y, COLOR_AI)
@@ -482,38 +546,41 @@ func _draw() -> void:
 
 	draw_set_transform(Vector2.ZERO)
 
+	# Scores stay upright, so they are placed on screen rather than in the field.
+	_draw_number(score_ai, _to_screen(Vector2(W / 2.0, H / 2.0 - 110.0)), 16.0, COLOR_AI)
+	_draw_number(score_player, _to_screen(Vector2(W / 2.0, H / 2.0 + 110.0)), 16.0, COLOR_PLAYER)
+
 	# Points (top-left) and combo
+	var cy := screen.y / 2.0
 	var font := ThemeDB.fallback_font
 	draw_rect(Rect2(10, 14, 250, 50), Color(0, 0, 0, 0.55))
 	draw_string(font, Vector2(24, 50.0), "PTS %d  BEST %d" % [points, best],
 		HORIZONTAL_ALIGNMENT_LEFT, 230, 26, Color(1, 1, 1, 0.9))
 	if combo >= 2 and not game_over:
 		var size := 36 + mini(combo, 20) * 2
-		_draw_label("COMBO x%d" % combo, H / 2.0 + 260.0, size, _rainbow(0.0).lightened(0.2 + 0.4 * (1.0 - _trip())))
+		_draw_label("COMBO x%d" % combo, cy + (220.0 if landscape else 260.0), size, _rainbow(0.0).lightened(0.2 + 0.4 * (1.0 - _trip())))
 	for popup in popups:
 		var c: Color = popup.color
 		c.a = clampf(popup.life * 2.0, 0.0, 1.0)
-		draw_string(font, popup.pos + Vector2(-W / 2.0 + 3, 3), popup.text,
-			HORIZONTAL_ALIGNMENT_CENTER, W, 40, Color(0, 0, 0, c.a))
-		draw_string(font, popup.pos - Vector2(W / 2.0, 0), popup.text,
-			HORIZONTAL_ALIGNMENT_CENTER, W, 40, c)
+		_draw_centered(popup.text, _to_screen(popup.pos) - Vector2(0, popup.rise), 40, c)
 
 	# Music toggle (top-right corner)
-	draw_rect(Rect2(MUTE_RECT.position + Vector2(20, 14), Vector2(MUTE_RECT.size.x - 30, 50)),
+	var mute := _mute_rect()
+	draw_rect(Rect2(mute.position + Vector2(20, 14), Vector2(mute.size.x - 30, 50)),
 		Color(0, 0, 0, 0.55))
-	draw_string(font, Vector2(MUTE_RECT.position.x, 50.0),
+	draw_string(font, Vector2(mute.position.x, 50.0),
 		"MUSIC: ON" if music_on else "MUSIC: OFF",
-		HORIZONTAL_ALIGNMENT_CENTER, MUTE_RECT.size.x, 28, Color(1, 1, 1, 0.8))
+		HORIZONTAL_ALIGNMENT_CENTER, mute.size.x, 28, Color(1, 1, 1, 0.8))
 
 	# Messages
 	if game_over:
 		var msg := "YOU WIN!" if score_player > score_ai else "CPU WINS"
-		_draw_label(msg, H / 2.0 - 230.0, 72, _rainbow(0.0).lightened(0.3))
-		_draw_label("%d POINTS" % points, H / 2.0 - 140.0, 48, Color.WHITE)
+		_draw_label(msg, cy - 230.0, 72, _rainbow(0.0).lightened(0.3))
+		_draw_label("%d POINTS" % points, cy - 140.0, 48, Color.WHITE)
 		if new_best:
-			_draw_label("NEW BEST!", H / 2.0 + 200.0, 56, _rainbow(0.5).lightened(0.3))
+			_draw_label("NEW BEST!", cy + 200.0, 56, _rainbow(0.5).lightened(0.3))
 		else:
-			_draw_label("BEST %d" % best, H / 2.0 + 200.0, 40, Color.WHITE)
-		_draw_label("Tap to play again", H / 2.0 + 300.0, 40, Color.WHITE)
+			_draw_label("BEST %d" % best, cy + 200.0, 40, Color.WHITE)
+		_draw_label("Tap to play again", cy + 300.0, 40, Color.WHITE)
 	elif not has_touched:
-		_draw_label("Drag to move", H - 220.0, 40, Color.WHITE)
+		_draw_label("Drag to move", field_rect.end.y - (120.0 if landscape else 220.0), 40, Color.WHITE)

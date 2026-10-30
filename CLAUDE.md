@@ -26,7 +26,9 @@ game repo, including Yes And.
 - Use stretch mode `canvas_items`. Respect safe areas on phones
   (`DisplayServer.get_display_safe_area()`) so nothing hides under the notch.
 - Touch targets are at least 88 px tall at the 720-wide base resolution.
-- Exception: Phone Pong is locked to portrait on purpose; it is a pipeline test.
+- Phone Pong: the native phone apps are locked to portrait. On wide screens
+  (desktop/Steam, or a phone turned sideways in the browser) the field is
+  drawn rotated so it plays left to right.
 
 ## Input
 - Every action works with touch AND mouse. Keep `emulate_touch_from_mouse` on,

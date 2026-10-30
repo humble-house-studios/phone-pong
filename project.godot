@@ -12,8 +12,11 @@ config/features=PackedStringArray("4.3", "GL Compatibility")
 
 window/size/viewport_width=720
 window/size/viewport_height=1280
+; Desktop (Steam) opens as a wide window and plays sideways.
+window/size/window_width_override=1280
+window/size/window_height_override=720
 window/stretch/mode="canvas_items"
-window/stretch/aspect="keep"
+window/stretch/aspect="expand"
 window/handheld/orientation=1
 
 [input_devices]

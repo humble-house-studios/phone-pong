@@ -5,7 +5,9 @@ GitHub builds it, and you play the result in your phone's browser.
 
 ## How to play
 Hold the phone upright. You're the yellow paddle at the bottom; drag anywhere
-to move it. First to 7 wins. On a computer, the arrow keys or mouse work too.
+to move it. First to 7 wins. On a computer, move the mouse or use the arrow keys.
+On a wide screen (computer, Steam Deck, or a phone turned sideways) the game
+plays left to right: you're on the left.
 
 Every return in a row grows your combo and is worth more points. Hit the ball
 with the middle of your paddle for a PERFECT (double points). Long combos make
