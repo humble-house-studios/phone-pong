@@ -149,6 +149,9 @@ var boss_intro := 0.0  # seconds left to show the boss's name
 # count toward saved records.
 const TEST_ITEMS := ["Next boss", "Skip this stage", "God mode", "Random relic", "Close"]
 var test_menu := false
+var title := true  # showing the start menu
+var title_index := 0
+const TITLE_ITEMS := ["PLAY", "MUSIC"]
 var test_index := 0
 var god_mode := false
 var cheated := false
@@ -205,6 +208,11 @@ func _input(event: InputEvent) -> void:
 				_toggle_music()
 				return
 			has_touched = true
+			if title:
+				var button := _title_item_at(local_event.position)
+				if button >= 0:
+					_title_action(button)
+				return
 			if test_menu:
 				var item := _test_item_at(local_event.position)
 				if item >= 0:
@@ -234,11 +242,18 @@ func _input(event: InputEvent) -> void:
 		touch_target = _to_field(local_pos).x
 		if picking and _card_at(local_pos) >= 0:
 			pick_index = _card_at(local_pos)
+		if title and _title_item_at(local_pos) >= 0:
+			title_index = _title_item_at(local_pos)
 		if test_menu and _test_item_at(local_pos) >= 0:
 			test_index = _test_item_at(local_pos)
 
 	# Keyboard / gamepad for the menus and restarting.
-	if test_menu:
+	if title:
+		if event.is_action_pressed("ui_up") or event.is_action_pressed("ui_down"):
+			title_index = 1 - title_index
+		elif event.is_action_pressed("ui_accept"):
+			_title_action(title_index)
+	elif test_menu:
 		if event.is_action_pressed("ui_up"):
 			test_index = posmod(test_index - 1, TEST_ITEMS.size())
 		elif event.is_action_pressed("ui_down"):
@@ -265,7 +280,7 @@ func _process(delta: float) -> void:
 	_move_player(delta)
 	_move_ai(delta)
 
-	if game_over or picking or test_menu:
+	if game_over or picking or test_menu or title:
 		queue_redraw()
 		return
 
@@ -529,6 +544,51 @@ func _start_stage() -> void:
 		boss_intro = 2.0
 	else:
 		_popup("STAGE %d" % stage, Vector2(W / 2.0, H / 2.0 + 260.0), Color.WHITE)
+
+
+# --- Start menu --------------------------------------------------------------
+
+func _title_item_rects() -> Array[Rect2]:
+	var center := screen / 2.0
+	return [
+		Rect2(center + Vector2(-220, 40), Vector2(440, 130)),
+		Rect2(center + Vector2(-220, 200), Vector2(440, 96)),
+	]
+
+
+func _title_item_at(point: Vector2) -> int:
+	var rects := _title_item_rects()
+	for i in rects.size():
+		if rects[i].has_point(point):
+			return i
+	return -1
+
+
+func _title_action(index: int) -> void:
+	if index == 0:
+		title = false
+		_restart()
+	else:
+		_toggle_music()
+
+
+func _draw_title() -> void:
+	draw_rect(Rect2(Vector2.ZERO, screen), Color(0, 0, 0, 0.6))
+	var cy := screen.y / 2.0
+	var top := cy - (250.0 if landscape else 380.0)
+	_draw_label("PHONE PONG", top, 96, _rainbow(0.0).lightened(0.3))
+	_draw_label("a psychedelic roguelike", top + 70.0, 34, Color.WHITE)
+	if best_stage > 0:
+		_draw_label("BEST %d  -  STAGE %d" % [best, best_stage], top + 150.0, 32, COLOR_PLAYER)
+	var rects := _title_item_rects()
+	for i in rects.size():
+		if i == title_index:
+			draw_rect(rects[i].grow(PX), _rainbow(0.0))
+		_draw_block(rects[i], Color(0.08, 0.04, 0.16, 0.95))
+	_draw_fitted("PLAY", rects[0], 0.68, 64, _rainbow(0.3).lightened(0.4))
+	_draw_fitted("MUSIC: %s" % ("ON" if music_on else "OFF"), rects[1], 0.64, 34, Color.WHITE)
+	if not landscape:
+		_draw_label("Drag to move. Beat bosses for relics.", rects[1].end.y + 90.0, 28, Color(1, 1, 1, 0.8))
 
 
 # --- Test menu ---------------------------------------------------------------
@@ -1061,8 +1121,10 @@ func _draw() -> void:
 		var info: Array = BOSSES[_boss()]
 		_draw_label("BOSS: %s" % info[0], cy + 150.0, 56, COLOR_AI.lightened(0.2))
 		_draw_label(info[1], cy + 215.0, 34, Color.WHITE)
-	elif not has_touched:
+	elif not has_touched and not title:
 		_draw_label("Drag to move", field_rect.end.y - (120.0 if landscape else 220.0), 40, Color.WHITE)
 
 	if test_menu:
 		_draw_test_menu()
+	if title:
+		_draw_title()
