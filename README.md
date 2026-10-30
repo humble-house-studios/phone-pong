@@ -12,7 +12,10 @@ plays left to right: you're on the right.
 It's a roguelike: score 3 on the CPU to clear a stage, then pick 1 of 3
 upgrades (wider paddle, extra heart, shield, magnet and more). Every goal
 against you costs a heart, and when they're gone the run is over. The CPU gets
-faster each stage, and every 4th stage is a boss with a giant paddle.
+faster each stage, and every 4th stage is a boss with a health bar and a
+trick: The Wall (giant paddle), The Twins (two paddles), Phantom (the ball
+hides in fog) and Wobbler (the ball wobbles). Beat a boss to pick a relic, a
+rare item that lasts the whole run, like a Phoenix Feather that revives you.
 
 Every return in a row grows your combo and is worth more points. Hit the ball
 with the middle of your paddle for a PERFECT (double points). Long combos make

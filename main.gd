@@ -5,7 +5,9 @@ extends Node2D
 ## drag anywhere, or move the mouse, to move it. Arrow keys work too.
 ## Roguelike runs: score 3 on the CPU to clear a stage, then pick 1 of 3
 ## upgrades. Each goal against you costs a heart; lose them all and the run
-## ends. The CPU gets faster every stage, and every 4th stage is a boss.
+## ends. The CPU gets faster every stage, and every 4th stage is one of four
+## bosses with a health bar and a trick. Beating a boss earns a relic: a rare
+## item that lasts the whole run.
 ## The game logic always runs in an upright 720x1280 "field"; on a wide
 ## screen the field is simply drawn rotated, and input is rotated back.
 ## Every return builds a combo worth more points; middle-of-paddle hits are
@@ -28,6 +30,19 @@ const STAGE_WIN := 3  # points to clear a stage
 const START_HEARTS := 3
 const BOSS_EVERY := 4
 const SHIELD_Y := H - 30.0
+const BOSS_HP := 5  # points to beat a boss
+const TWIN_Y := AI_Y + 320.0
+const FOG_TOP := H / 2.0 - 380.0
+const FOG_BOTTOM := H / 2.0 + 120.0
+
+# --- Bosses: [name, hint], cycled every BOSS_EVERY stages ---------------------
+enum Boss { WALL, TWINS, PHANTOM, WOBBLER }
+const BOSSES := [
+	["THE WALL", "Giant paddle!"],
+	["THE TWINS", "Two paddles!"],
+	["PHANTOM", "The ball hides in the fog!"],
+	["WOBBLER", "The ball wobbles!"],
+]
 
 const MUSIC_FRAMES := 302400  # printed by tools/make_audio.py
 const MUSIC_VOLUME_DB := -6.0
@@ -54,6 +69,17 @@ const UPGRADES := {
 	"slow": ["SLUGGISH CPU", "CPU moves slower", 4],
 }
 const MAX_HEARTS := 9
+
+# --- Relics: rare items from bosses, one of each: id -> [name, description, colour]
+const RELICS := {
+	"phoenix": ["PHOENIX FEATHER", "Revive once with 1 heart", "#ff7b00"],
+	"vampire": ["VAMPIRE FANG", "Every 10 combo heals 1 heart", "#e01e37"],
+	"midas": ["MIDAS TOUCH", "PERFECT hits score x3", "#ffd700"],
+	"warp": ["TIME WARP", "Ball slows down near you", "#9d4edd"],
+	"dice": ["LUCKY DICE", "4 upgrade choices", "#06d6a0"],
+	"crystal": ["CRYSTAL HEART", "Free shield every stage", "#4cc9f0"],
+	"heavy": ["HEAVY HITTER", "Your goals count double", "#ff5d8f"],
+}
 const MAX_SHIELDS := 3
 
 # --- 8-bit art ---------------------------------------------------------------
@@ -114,6 +140,10 @@ var levels := {}  # upgrade id -> level owned this run
 var offers: Array[String] = []
 var pick_index := 0
 var stage_bonus := 0
+var pick_relic := false  # the cards on offer are relics, not upgrades
+var relics: Array[String] = []
+var phoenix_used := false
+var boss_intro := 0.0  # seconds left to show the boss's name
 
 var landscape := false
 var screen := Vector2(W, H)  # visible area in screen pixels
@@ -197,6 +227,7 @@ func _input(event: InputEvent) -> void:
 func _process(delta: float) -> void:
 	_update_art(delta)
 	input_lock = maxf(input_lock - delta, 0.0)
+	boss_intro = maxf(boss_intro - delta, 0.0)
 	_move_player(delta)
 	_move_ai(delta)
 
@@ -216,7 +247,13 @@ func _process(delta: float) -> void:
 	if magnet > 0 and ball_vel.y > 0.0 and ball_pos.y > H * 0.45:
 		ball_vel.x += signf(player_x - ball_pos.x) * 260.0 * magnet * delta
 
-	ball_pos += ball_vel * delta
+	# Time Warp relic: the ball slows down as it nears you.
+	var step := delta
+	if _has("warp") and ball_vel.y > 0.0 and ball_pos.y > H * 0.7:
+		step *= 0.6
+	ball_pos += ball_vel * step
+	if _boss() == Boss.WOBBLER:
+		ball_pos.x += cos(art_time * 6.0) * 280.0 * delta
 
 	# Side walls
 	if ball_pos.x < BALL_R:
@@ -236,6 +273,11 @@ func _process(delta: float) -> void:
 		_play("hit_player", _rally_pitch())
 	elif ball_vel.y < 0.0 and _ball_touches(ai_x, AI_Y, _ai_width()):
 		_bounce(ai_x, AI_Y, 1.0, _ai_width())
+		_burst(ball_pos, COLOR_AI, 14)
+		_play("hit_cpu", _rally_pitch())
+	elif ball_vel.y < 0.0 and _boss() == Boss.TWINS \
+			and _ball_touches(_twin_x(), TWIN_Y, PADDLE_SIZE.x):
+		_bounce(_twin_x(), TWIN_Y, 1.0, PADDLE_SIZE.x)
 		_burst(ball_pos, COLOR_AI, 14)
 		_play("hit_cpu", _rally_pitch())
 
@@ -261,7 +303,7 @@ func _process(delta: float) -> void:
 		_play("lose" if game_over else "score_cpu")
 	elif ball_pos.y < -BALL_R:
 		_burst(Vector2(ball_pos.x, 10.0), COLOR_PLAYER, 40)
-		score_player += 1
+		score_player += 2 if _has("heavy") else 1
 		var bonus := _scaled(5 + combo * 2)
 		points += bonus
 		_popup("POINT! +%d" % bonus, Vector2(W / 2.0, 220.0), COLOR_PLAYER)
@@ -326,6 +368,10 @@ func _after_point(next_serve_dir: float) -> void:
 	shake = 0.25
 	pulse = 1.0
 	hue_shift += 0.17
+	if hearts <= 0 and _has("phoenix") and not phoenix_used:
+		phoenix_used = true
+		hearts = 1
+		_popup("PHOENIX! REVIVED", Vector2(W / 2.0, H / 2.0 + 260.0), Color(RELICS["phoenix"][2]), 1.8)
 	if hearts <= 0:
 		game_over = true
 		input_lock = 0.8
@@ -335,7 +381,7 @@ func _after_point(next_serve_dir: float) -> void:
 			best = maxi(best, points)
 			best_stage = maxi(best_stage, stage)
 			_save_best()
-	elif score_player >= STAGE_WIN:
+	elif score_player >= _stage_target():
 		_clear_stage()
 
 
@@ -349,6 +395,8 @@ func _restart() -> void:
 	hearts = START_HEARTS
 	shields = 0
 	levels.clear()
+	relics.clear()
+	phoenix_used = false
 	_start_stage()
 	_set_music_volume(MUSIC_VOLUME_DB)
 
@@ -356,16 +404,23 @@ func _restart() -> void:
 # --- Roguelike stages and upgrades -------------------------------------------
 
 func _clear_stage() -> void:
-	stage_bonus = _scaled(20 * stage)
+	stage_bonus = _scaled(20 * stage * (2 if _is_boss() else 1))
 	points += stage_bonus
 	popups.clear()
-	# Offer three different upgrades that aren't maxed out yet.
+	# Bosses drop a choice of relics you don't have yet; other stages offer
+	# upgrades that aren't maxed out.
 	var pool: Array[String] = []
-	for id in UPGRADES:
-		if _can_offer(id):
+	for id in RELICS:
+		if _is_boss() and not _has(id):
 			pool.append(id)
+	pick_relic = not pool.is_empty()
+	if not pick_relic:
+		for id in UPGRADES:
+			if _can_offer(id):
+				pool.append(id)
 	pool.shuffle()
-	offers.assign(pool.slice(0, 3))
+	var count := 4 if _has("dice") and not pick_relic else 3
+	offers.assign(pool.slice(0, count))
 	pick_index = 0
 	picking = true
 	input_lock = 0.6
@@ -383,13 +438,16 @@ func _can_offer(id: String) -> bool:
 func _card_rects() -> Array[Rect2]:
 	var rects: Array[Rect2] = []
 	var center := screen / 2.0
-	for i in offers.size():
+	var n := offers.size()
+	for i in n:
 		if landscape:
-			var size := Vector2(360, 300)
-			rects.append(Rect2(center + Vector2((i - 1) * 400.0, 60.0) - size / 2.0, size))
+			var gap := minf(400.0, (screen.x - 60.0) / n)
+			var size := Vector2(gap - 40.0, 300)
+			rects.append(Rect2(center + Vector2((i - (n - 1) / 2.0) * gap, 60.0) - size / 2.0, size))
 		else:
-			var size := Vector2(560, 190)
-			rects.append(Rect2(center + Vector2(0.0, -110.0 + i * 230.0) - size / 2.0, size))
+			var gap := minf(230.0, 860.0 / n)
+			var size := Vector2(560, gap - 40.0)
+			rects.append(Rect2(center + Vector2(0.0, 120.0 + (i - (n - 1) / 2.0) * gap) - size / 2.0, size))
 	return rects
 
 
@@ -405,7 +463,12 @@ func _pick(index: int) -> void:
 	if input_lock > 0.0 or index < 0 or index >= offers.size():
 		return
 	var id := offers[index]
+	if pick_relic:
+		relics.append(id)
+		id = ""
 	match id:
+		"":
+			pass
 		"heart":
 			hearts += 1
 		"shield":
@@ -423,8 +486,11 @@ func _start_stage() -> void:
 	score_ai = 0
 	_after_point(1.0)
 	serve_timer = 1.2
+	if _has("crystal") and shields == 0:
+		shields = 1
 	if _is_boss():
-		_popup("STAGE %d - BOSS!" % stage, Vector2(W / 2.0, H / 2.0 + 260.0), COLOR_AI)
+		serve_timer = 2.0
+		boss_intro = 2.0
 	else:
 		_popup("STAGE %d" % stage, Vector2(W / 2.0, H / 2.0 + 260.0), Color.WHITE)
 
@@ -433,12 +499,32 @@ func _is_boss() -> bool:
 	return stage % BOSS_EVERY == 0
 
 
+func _boss() -> int:
+	# Which boss this stage is, or -1 for a normal stage.
+	if not _is_boss():
+		return -1
+	return (stage / BOSS_EVERY - 1) % BOSSES.size()
+
+
+func _stage_target() -> int:
+	return BOSS_HP if _is_boss() else STAGE_WIN
+
+
+func _twin_x() -> float:
+	# The second Twin mirrors the first, covering the other side.
+	return W - ai_x
+
+
+func _has(relic: String) -> bool:
+	return relic in relics
+
+
 func _player_width() -> float:
 	return PADDLE_SIZE.x + 32.0 * levels.get("wide", 0)
 
 
 func _ai_width() -> float:
-	return PADDLE_SIZE.x * (1.6 if _is_boss() else 1.0)
+	return PADDLE_SIZE.x * (1.6 if _boss() == Boss.WALL else 1.0)
 
 
 func _ai_speed() -> float:
@@ -457,11 +543,14 @@ func _on_player_return() -> void:
 	# Each return in a row is worth one more point; a middle hit doubles it.
 	combo += 1
 	var gain := combo
+	if _has("vampire") and combo % 10 == 0 and hearts < MAX_HEARTS:
+		hearts += 1
+		_popup("+1 HEART", Vector2(W / 2.0, H - 330.0), Color(RELICS["vampire"][2]))
 	var offset := absf(ball_pos.x - player_x) / (_player_width() / 2.0)
 	var at := Vector2(player_x, PLAYER_Y - 90.0)
 	gain = _scaled(gain)
 	if offset <= PERFECT_ZONE + 0.12 * levels.get("perfect", 0):
-		gain *= 2
+		gain *= 3 if _has("midas") else 2
 		_popup("PERFECT +%d" % gain, at, _rainbow(0.0).lightened(0.3))
 		_burst(ball_pos, Color.WHITE, 24)
 		hue_shift += 0.1
@@ -475,8 +564,8 @@ func _trip() -> float:
 	return minf(float(combo) / COMBO_FOR_MAX_TRIP, 1.0)
 
 
-func _popup(text: String, at: Vector2, color: Color) -> void:
-	popups.append({"text": text, "pos": at, "rise": 0.0, "life": 0.9, "color": color})
+func _popup(text: String, at: Vector2, color: Color, life: float = 0.9) -> void:
+	popups.append({"text": text, "pos": at, "rise": 0.0, "life": life, "color": color})
 
 
 func _load_best() -> void:
@@ -671,23 +760,35 @@ func _draw_cards() -> void:
 	draw_rect(Rect2(Vector2.ZERO, screen), Color(0, 0, 0, 0.55))
 	var cy := screen.y / 2.0
 	var top := cy - (250.0 if landscape else 400.0)
-	_draw_label("STAGE %d CLEAR!" % stage, top, 64, _rainbow(0.0).lightened(0.3))
-	_draw_label("+%d bonus  -  pick an upgrade" % stage_bonus, top + 64.0, 36, Color.WHITE)
+	var title := "BOSS DEFEATED!" if pick_relic else "STAGE %d CLEAR!" % stage
+	_draw_label(title, top, 64, _rainbow(0.0).lightened(0.3))
+	_draw_label("+%d bonus  -  pick %s" % [stage_bonus, "a relic" if pick_relic else "an upgrade"],
+		top + 64.0, 36, Color.WHITE)
 	var rects := _card_rects()
 	for i in rects.size():
 		var rect := rects[i]
 		var id := offers[i]
-		var info: Array = UPGRADES[id]
+		var info: Array = RELICS[id] if pick_relic else UPGRADES[id]
 		if i == pick_index:
 			draw_rect(rect.grow(PX * 1.5), _rainbow(0.0))
 		_draw_block(rect, Color(0.08, 0.04, 0.16, 0.95))
-		draw_string(font, Vector2(rect.position.x, rect.position.y + rect.size.y * 0.4), info[0],
-			HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 40, _rainbow(i * 0.33).lightened(0.3))
-		draw_string(font, Vector2(rect.position.x, rect.position.y + rect.size.y * 0.66), info[1],
-			HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 28, Color.WHITE)
-		var owned: int = hearts if id == "heart" else (shields if id == "shield" else levels.get(id, 0))
-		draw_string(font, Vector2(rect.position.x, rect.position.y + rect.size.y * 0.88),
-			"have %d" % owned, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 22, Color(1, 1, 1, 0.6))
+		var name_color := Color(info[2]) if pick_relic else _rainbow(i * 0.33).lightened(0.3)
+		_draw_fitted(info[0], rect, 0.4, 40, name_color)
+		_draw_fitted(info[1], rect, 0.66, 28, Color.WHITE)
+		var note := "RELIC"
+		if not pick_relic:
+			var owned: int = hearts if id == "heart" else (shields if id == "shield" else levels.get(id, 0))
+			note = "have %d" % owned
+		_draw_fitted(note, rect, 0.88, 22, Color(1, 1, 1, 0.6))
+
+
+func _draw_fitted(text: String, rect: Rect2, height: float, size: int, color: Color) -> void:
+	# Centred in the card at a fraction of its height, shrunk until it fits.
+	var font := ThemeDB.fallback_font
+	while size > 16 and font.get_string_size(text, HORIZONTAL_ALIGNMENT_LEFT, -1, size).x > rect.size.x - 24.0:
+		size -= 2
+	draw_string(font, Vector2(rect.position.x, rect.position.y + rect.size.y * height), text,
+		HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, size, color)
 
 
 func _draw_number(value: int, center: Vector2, cell: float, color: Color) -> void:
@@ -744,6 +845,8 @@ func _draw() -> void:
 
 	# Paddles, sparks and ball
 	_draw_paddle(ai_x, AI_Y, _ai_width(), COLOR_AI)
+	if _boss() == Boss.TWINS:
+		_draw_paddle(_twin_x(), TWIN_Y, PADDLE_SIZE.x, COLOR_AI.darkened(0.2))
 	_draw_paddle(player_x, PLAYER_Y, _player_width(), COLOR_PLAYER)
 	# Shield charges: stacked glowing bars behind the player.
 	for i in shields:
@@ -759,6 +862,24 @@ func _draw() -> void:
 				Color(_rainbow(i * 0.08), fade * 0.8))
 		_draw_ball(ball_pos, Color.WHITE, true)
 		_draw_ball(ball_pos, _rainbow(0.0).lightened(0.6), false)
+
+	if _boss() == Boss.PHANTOM:
+		# A band of flickering fog the ball disappears into.
+		draw_rect(Rect2(0, FOG_TOP, W, FOG_BOTTOM - FOG_TOP), Color(0.12, 0.0, 0.18, 0.93))
+		var flicker := int(art_time * 12.0)
+		for i in 40:
+			var h := posmod(hash(flicker * 97 + i), 1 << 30)
+			var cell := Vector2(h % 90, (h / 90) % int((FOG_BOTTOM - FOG_TOP) / PX)) * PX
+			draw_rect(Rect2(Vector2(0, FOG_TOP) + cell, Vector2(PX, PX)), _rainbow(i * 0.05).darkened(0.5))
+
+	if _is_boss():
+		# Boss health: one block per point still needed.
+		var left := _stage_target() - score_player
+		var seg := Vector2(64, 16)
+		var start := W / 2.0 - (BOSS_HP * (seg.x + PX) - PX) / 2.0
+		for i in BOSS_HP:
+			var rect := Rect2(Vector2(start + i * (seg.x + PX), AI_Y + 50.0), seg)
+			_draw_block(rect, COLOR_AI if i < left else Color(0.2, 0.2, 0.2, 0.8))
 
 	draw_set_transform(Vector2.ZERO)
 
@@ -780,7 +901,14 @@ func _draw() -> void:
 	if hearts > 5:
 		draw_string(font, Vector2(heart_x + 150.0, 50.0), "+%d" % (hearts - 5),
 			HORIZONTAL_ALIGNMENT_LEFT, 40, 22, COLOR_AI)
-	if combo >= 2 and not game_over and not picking:
+	# Relics owned this run: little gems under the box.
+	for i in relics.size():
+		var gem := Rect2(hud_x + 14.0 + i * 30.0, 72.0, 22.0, 22.0)
+		draw_rect(gem.grow(3.0), OUTLINE)
+		draw_rect(gem, Color(RELICS[relics[i]][2]))
+		draw_string(font, gem.position + Vector2(0, 18), RELICS[relics[i]][0].left(1),
+			HORIZONTAL_ALIGNMENT_CENTER, gem.size.x, 18, Color.BLACK)
+	if combo >= 2 and not game_over and not picking and boss_intro <= 0.0:
 		var size := 36 + mini(combo, 20) * 2
 		_draw_label("COMBO x%d" % combo, cy + (220.0 if landscape else 260.0), size, _rainbow(0.0).lightened(0.2 + 0.4 * (1.0 - _trip())))
 	for popup in popups:
@@ -807,5 +935,9 @@ func _draw() -> void:
 		else:
 			_draw_label("BEST %d  -  STAGE %d" % [best, best_stage], cy + 200.0, 40, Color.WHITE)
 		_draw_label("Tap to play again", cy + 300.0, 40, Color.WHITE)
+	elif boss_intro > 0.0:
+		var info: Array = BOSSES[_boss()]
+		_draw_label("BOSS: %s" % info[0], cy + 150.0, 56, COLOR_AI.lightened(0.2))
+		_draw_label(info[1], cy + 215.0, 34, Color.WHITE)
 	elif not has_touched:
 		_draw_label("Drag to move", field_rect.end.y - (120.0 if landscape else 220.0), 40, Color.WHITE)
