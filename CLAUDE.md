@@ -73,8 +73,9 @@ game repo, including Yes And.
   and send him https://humble-house-studios.github.io/phone-pong/
 
 ## Working with Samuel
-- End every reply with the game's play link
-  (this game: https://humble-house-studios.github.io/phone-pong/).
+- End every reply with a short summary of the last build (passed or failed,
+  what it contained, any Godot errors), then the game's play link on the
+  very last line (this game: https://humble-house-studios.github.io/phone-pong/).
 - He works from his phone and is new to code: explain results in plain words,
   keep replies short, and handle git, builds and fixes yourself.
 - When he needs to sign in, create an account or tap a setting, give him the
