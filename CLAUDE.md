@@ -28,7 +28,8 @@ game repo, including Yes And.
 - Touch targets are at least 88 px tall at the 720-wide base resolution.
 - Phone Pong: the native phone apps are locked to portrait. On wide screens
   (desktop/Steam, or a phone turned sideways in the browser) the field is
-  drawn rotated so it plays left to right.
+  drawn rotated so it plays left to right, with the player on the right
+  (right thumb).
 
 ## Input
 - Every action works with touch AND mouse. Keep `emulate_touch_from_mouse` on,

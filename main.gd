@@ -1,6 +1,7 @@
 extends Node2D
 ## Pong built for a phone held upright, that turns sideways on wide screens.
-## You are the yellow paddle at the bottom (or on the left when sideways):
+## You are the yellow paddle at the bottom (or on the right when sideways,
+## where a right thumb sits):
 ## drag anywhere, or move the mouse, to move it. Arrow keys work too.
 ## First to 7 wins.
 ## The game logic always runs in an upright 720x1280 "field"; on a wide
@@ -205,7 +206,7 @@ func _process(delta: float) -> void:
 
 func _move_player(delta: float) -> void:
 	# Sideways, the paddle runs up and down the screen.
-	var axis := Input.get_axis("ui_up", "ui_down") if landscape \
+	var axis := Input.get_axis("ui_down", "ui_up") if landscape \
 		else Input.get_axis("ui_left", "ui_right")
 	if axis != 0.0:
 		touch_target = -1.0
@@ -336,8 +337,8 @@ func _update_layout() -> void:
 	screen = real / minf(real.x / base.x, real.y / base.y)
 	field_rect = Rect2(_snap((screen - base) / 2.0), base)
 	if landscape:
-		# Field "down" (toward the player) points left; field "right" points down.
-		field_xform = Transform2D(Vector2(0, 1), Vector2(-1, 0), field_rect.position + Vector2(H, 0))
+		# Field "down" (toward the player) points right; field "right" points up.
+		field_xform = Transform2D(Vector2(0, -1), Vector2(1, 0), field_rect.position + Vector2(0, W))
 	else:
 		field_xform = Transform2D(Vector2(1, 0), Vector2(0, 1), field_rect.position)
 	backdrop.size = screen
@@ -354,6 +355,9 @@ func _to_screen(point: Vector2) -> Vector2:
 
 
 func _mute_rect() -> Rect2:
+	# Sideways, the player's thumb is on the right, so the button moves left.
+	if landscape:
+		return Rect2(0.0, 0.0, 230.0, 70.0)
 	return Rect2(screen.x - 230.0, 0.0, 230.0, 70.0)
 
 
@@ -550,11 +554,12 @@ func _draw() -> void:
 	_draw_number(score_ai, _to_screen(Vector2(W / 2.0, H / 2.0 - 110.0)), 16.0, COLOR_AI)
 	_draw_number(score_player, _to_screen(Vector2(W / 2.0, H / 2.0 + 110.0)), 16.0, COLOR_PLAYER)
 
-	# Points (top-left) and combo
+	# Points (opposite corner to the music button) and combo
 	var cy := screen.y / 2.0
 	var font := ThemeDB.fallback_font
-	draw_rect(Rect2(10, 14, 250, 50), Color(0, 0, 0, 0.55))
-	draw_string(font, Vector2(24, 50.0), "PTS %d  BEST %d" % [points, best],
+	var pts_x := screen.x - 260.0 if landscape else 10.0
+	draw_rect(Rect2(pts_x, 14, 250, 50), Color(0, 0, 0, 0.55))
+	draw_string(font, Vector2(pts_x + 14.0, 50.0), "PTS %d  BEST %d" % [points, best],
 		HORIZONTAL_ALIGNMENT_LEFT, 230, 26, Color(1, 1, 1, 0.9))
 	if combo >= 2 and not game_over:
 		var size := 36 + mini(combo, 20) * 2
@@ -564,7 +569,7 @@ func _draw() -> void:
 		c.a = clampf(popup.life * 2.0, 0.0, 1.0)
 		_draw_centered(popup.text, _to_screen(popup.pos) - Vector2(0, popup.rise), 40, c)
 
-	# Music toggle (top-right corner)
+	# Music toggle (top corner)
 	var mute := _mute_rect()
 	draw_rect(Rect2(mute.position + Vector2(20, 14), Vector2(mute.size.x - 30, 50)),
 		Color(0, 0, 0, 0.55))
