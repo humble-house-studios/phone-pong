@@ -36,9 +36,21 @@ jobs:
         run: godot --headless --import || true
 
       - name: Export web build
+        shell: bash
         run: |
           mkdir -v -p build/web
-          godot --headless --verbose --export-release "Web" build/web/index.html
+          set +e
+          godot --headless --export-release "Web" build/web/index.html 2>&1 | tee export.log
+          code=${PIPESTATUS[0]}
+          set -e
+          # Surface Godot's errors as annotations so they show up without opening the raw log.
+          grep -iE "error|failed|cannot|invalid" export.log | head -20 | while IFS= read -r line; do
+            echo "::error title=Godot export::${line}"
+          done
+          if [ ! -f build/web/index.html ]; then
+            echo "::error title=Godot export::No index.html produced (exit code ${code})"
+            exit 1
+          fi
 
       - uses: actions/upload-pages-artifact@v3
         with:
