@@ -18,6 +18,11 @@ const FOLLOW_SPEED := 2400.0
 const MAX_BOUNCE_ANGLE := 60.0
 const WIN_SCORE := 7
 
+const MUSIC_FRAMES := 302400  # printed by tools/make_audio.py
+const MUSIC_VOLUME_DB := -6.0
+const SFX_NAMES := ["hit_player", "hit_cpu", "wall", "score_player", "score_cpu", "win", "lose"]
+const MUTE_RECT := Rect2(W - 230.0, 0.0, 230.0, 70.0)
+
 const COLOR_PLAYER := Color("#ffd166")
 const COLOR_AI := Color("#ef476f")
 const COLOR_DIM := Color(1, 1, 1, 0.18)
@@ -33,12 +38,44 @@ var score_ai := 0
 var game_over := false
 var touch_target := -1.0
 var has_touched := false
+var rally := 0
+
+var sfx := {}
+var music_player: AudioStreamPlayer
+var music_on := true
+var music_started := false
+
+
+func _ready() -> void:
+	for key in SFX_NAMES:
+		var player := AudioStreamPlayer.new()
+		player.stream = load("res://audio/%s.wav" % key)
+		add_child(player)
+		sfx[key] = player
+
+	var music := load("res://audio/music.wav") as AudioStreamWAV
+	music.loop_mode = AudioStreamWAV.LOOP_FORWARD
+	music.loop_begin = 0
+	music.loop_end = MUSIC_FRAMES
+	music_player = AudioStreamPlayer.new()
+	music_player.stream = music
+	music_player.volume_db = MUSIC_VOLUME_DB
+	add_child(music_player)
+	# Safety net in case a platform ignores the loop points.
+	music_player.finished.connect(_on_music_finished)
 
 
 func _input(event: InputEvent) -> void:
+	# Browsers only allow sound after the player touches the screen or presses a key.
+	if (event is InputEventScreenTouch and event.pressed) or event is InputEventKey:
+		_start_music_once()
+
 	if event is InputEventScreenTouch or event is InputEventScreenDrag:
 		var local_event := make_input_local(event)
 		if event is InputEventScreenTouch and event.pressed:
+			if MUTE_RECT.has_point(local_event.position):
+				_toggle_music()
+				return
 			has_touched = true
 			if game_over:
 				_restart()
@@ -67,23 +104,29 @@ func _process(delta: float) -> void:
 	if ball_pos.x < BALL_R:
 		ball_pos.x = BALL_R
 		ball_vel.x = absf(ball_vel.x)
+		_play("wall")
 	elif ball_pos.x > W - BALL_R:
 		ball_pos.x = W - BALL_R
 		ball_vel.x = -absf(ball_vel.x)
+		_play("wall")
 
 	# Paddles
 	if ball_vel.y > 0.0 and _ball_touches(player_x, PLAYER_Y):
 		_bounce(player_x, PLAYER_Y, -1.0)
+		_play("hit_player", _rally_pitch())
 	elif ball_vel.y < 0.0 and _ball_touches(ai_x, AI_Y):
 		_bounce(ai_x, AI_Y, 1.0)
+		_play("hit_cpu", _rally_pitch())
 
 	# Scoring
 	if ball_pos.y > H + BALL_R:
 		score_ai += 1
 		_after_point(1.0)
+		_play("lose" if game_over else "score_cpu")
 	elif ball_pos.y < -BALL_R:
 		score_player += 1
 		_after_point(-1.0)
+		_play("win" if game_over else "score_player")
 
 	queue_redraw()
 
@@ -121,6 +164,7 @@ func _bounce(paddle_x: float, paddle_y: float, dir: float) -> void:
 	var speed := minf(ball_vel.length() * SPEED_UP, MAX_SPEED)
 	ball_vel = Vector2(sin(angle), cos(angle) * dir) * speed
 	ball_pos.y = paddle_y + dir * (PADDLE_SIZE.y / 2.0 + BALL_R)
+	rally += 1
 	Input.vibrate_handheld(15)
 
 
@@ -134,8 +178,10 @@ func _after_point(next_serve_dir: float) -> void:
 	ball_vel = Vector2.ZERO
 	serve_dir = next_serve_dir
 	serve_timer = 0.8
+	rally = 0
 	if score_player >= WIN_SCORE or score_ai >= WIN_SCORE:
 		game_over = true
+		_set_music_volume(MUSIC_VOLUME_DB - 14.0)
 
 
 func _restart() -> void:
@@ -144,6 +190,45 @@ func _restart() -> void:
 	game_over = false
 	_after_point(1.0)
 	serve_timer = 1.0
+	_set_music_volume(MUSIC_VOLUME_DB)
+
+
+# --- Audio -----------------------------------------------------------------
+
+func _play(key: String, pitch: float = 1.0) -> void:
+	var player: AudioStreamPlayer = sfx[key]
+	player.pitch_scale = pitch
+	player.play()
+
+
+func _rally_pitch() -> float:
+	# Each hit in a long rally sounds a little higher: builds tension.
+	return minf(1.0 + rally * 0.04, 1.6)
+
+
+func _start_music_once() -> void:
+	if music_started:
+		return
+	music_started = true
+	if music_on:
+		music_player.play()
+
+
+func _toggle_music() -> void:
+	music_on = not music_on
+	if music_on:
+		music_player.play()
+	else:
+		music_player.stop()
+
+
+func _set_music_volume(db: float) -> void:
+	create_tween().tween_property(music_player, "volume_db", db, 0.6)
+
+
+func _on_music_finished() -> void:
+	if music_on:
+		music_player.play()
 
 
 func _draw() -> void:
@@ -167,6 +252,11 @@ func _draw() -> void:
 	draw_rect(Rect2(Vector2(player_x, PLAYER_Y) - PADDLE_SIZE / 2.0, PADDLE_SIZE), COLOR_PLAYER)
 	if not game_over:
 		draw_circle(ball_pos, BALL_R, Color.WHITE)
+
+	# Music toggle (top-right corner)
+	draw_string(font, Vector2(MUTE_RECT.position.x, 50.0),
+		"MUSIC: ON" if music_on else "MUSIC: OFF",
+		HORIZONTAL_ALIGNMENT_CENTER, MUTE_RECT.size.x, 28, COLOR_DIM * 3.0)
 
 	# Messages
 	if game_over:
