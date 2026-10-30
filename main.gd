@@ -3,7 +3,9 @@ extends Node2D
 ## You are the yellow paddle at the bottom (or on the right when sideways,
 ## where a right thumb sits):
 ## drag anywhere, or move the mouse, to move it. Arrow keys work too.
-## First to 7 wins.
+## Roguelike runs: score 3 on the CPU to clear a stage, then pick 1 of 3
+## upgrades. Each goal against you costs a heart; lose them all and the run
+## ends. The CPU gets faster every stage, and every 4th stage is a boss.
 ## The game logic always runs in an upright 720x1280 "field"; on a wide
 ## screen the field is simply drawn rotated, and input is rotated back.
 ## Every return builds a combo worth more points; middle-of-paddle hits are
@@ -18,11 +20,14 @@ const BALL_R := 14.0
 const START_SPEED := 620.0
 const SPEED_UP := 1.06
 const MAX_SPEED := 1500.0
-const AI_SPEED := 520.0
+const AI_SPEED := 360.0  # stage 1; grows each stage
 const KEY_SPEED := 900.0
 const FOLLOW_SPEED := 2400.0
 const MAX_BOUNCE_ANGLE := 60.0
-const WIN_SCORE := 7
+const STAGE_WIN := 3  # points to clear a stage
+const START_HEARTS := 3
+const BOSS_EVERY := 4
+const SHIELD_Y := H - 30.0
 
 const MUSIC_FRAMES := 302400  # printed by tools/make_audio.py
 const MUSIC_VOLUME_DB := -6.0
@@ -36,13 +41,27 @@ const COLOR_DIM := Color(1, 1, 1, 0.18)
 const PERFECT_ZONE := 0.25  # middle quarter of the paddle (as a fraction of half-width)
 const COMBO_FOR_MAX_TRIP := 15  # combo at which the visuals go fully wild
 const SAVE_PATH := "user://save.cfg"
-const SAVE_VERSION := 1
+const SAVE_VERSION := 2
+
+# --- Roguelike upgrades: id -> [name, description, max level] ----------------
+const UPGRADES := {
+	"wide": ["WIDE PADDLE", "Your paddle grows", 5],
+	"heart": ["EXTRA HEART", "+1 heart", 99],
+	"perfect": ["SWEET SPOT", "Bigger PERFECT zone", 3],
+	"mult": ["MULTIPLIER", "+50% points", 99],
+	"shield": ["SHIELD", "Blocks one goal", 99],
+	"magnet": ["MAGNET", "Ball bends toward you", 3],
+	"slow": ["SLUGGISH CPU", "CPU moves slower", 4],
+}
+const MAX_HEARTS := 9
+const MAX_SHIELDS := 3
 
 # --- 8-bit art ---------------------------------------------------------------
 const PX := 8.0  # one "pixel" of art, in screen pixels
 const OUTLINE := Color(0, 0, 0, 0.85)
 const TRAIL_LEN := 10
 const BALL_SHAPE := [".##.", "####", "####", ".##."]
+const HEART_SHAPE := [".##.##.", "#######", "#######", ".#####.", "..###..", "...#..."]
 # 3x5 pixel digits for the scores.
 const DIGITS := [
 	["###", "#.#", "#.#", "#.#", "###"], [".#.", "##.", ".#.", ".#.", "###"],
@@ -60,7 +79,9 @@ var serve_dir := 1.0
 var serve_timer := 1.2
 var score_player := 0
 var score_ai := 0
-var game_over := false
+var game_over := false  # the run has ended
+var picking := false  # choosing an upgrade between stages
+var input_lock := 0.0  # ignore taps briefly so a drag doesn't pick by accident
 var touch_target := -1.0
 var has_touched := false
 var rally := 0
@@ -84,6 +105,15 @@ var points := 0
 var best := 0
 var combo := 0
 var new_best := false
+
+var stage := 1
+var best_stage := 0
+var hearts := START_HEARTS
+var shields := 0
+var levels := {}  # upgrade id -> level owned this run
+var offers: Array[String] = []
+var pick_index := 0
+var stage_bonus := 0
 
 var landscape := false
 var screen := Vector2(W, H)  # visible area in screen pixels
@@ -135,21 +165,42 @@ func _input(event: InputEvent) -> void:
 				_toggle_music()
 				return
 			has_touched = true
+			if picking:
+				var card := _card_at(local_event.position)
+				if card >= 0:
+					_pick(card)
+				return
 			if game_over:
-				_restart()
+				if input_lock <= 0.0:
+					_restart()
 				return
 		touch_target = _to_field(local_event.position).x
 	elif event is InputEventMouseMotion:
 		# On a computer the paddle follows the mouse without needing a click.
-		touch_target = _to_field(make_input_local(event).position).x
+		var local_pos := make_input_local(event).position as Vector2
+		touch_target = _to_field(local_pos).x
+		if picking and _card_at(local_pos) >= 0:
+			pick_index = _card_at(local_pos)
+
+	# Keyboard / gamepad for the upgrade cards and restarting.
+	if picking:
+		if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+			pick_index = posmod(pick_index - 1, offers.size())
+		elif event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+			pick_index = posmod(pick_index + 1, offers.size())
+		elif event.is_action_pressed("ui_accept"):
+			_pick(pick_index)
+	elif game_over and event.is_action_pressed("ui_accept") and input_lock <= 0.0:
+		_restart()
 
 
 func _process(delta: float) -> void:
 	_update_art(delta)
+	input_lock = maxf(input_lock - delta, 0.0)
 	_move_player(delta)
 	_move_ai(delta)
 
-	if game_over:
+	if game_over or picking:
 		queue_redraw()
 		return
 
@@ -159,6 +210,11 @@ func _process(delta: float) -> void:
 			_launch()
 		queue_redraw()
 		return
+
+	# Magnet upgrade: while the ball heads your way, it bends toward your paddle.
+	var magnet: int = levels.get("magnet", 0)
+	if magnet > 0 and ball_vel.y > 0.0 and ball_pos.y > H * 0.45:
+		ball_vel.x += signf(player_x - ball_pos.x) * 260.0 * magnet * delta
 
 	ball_pos += ball_vel * delta
 
@@ -173,20 +229,31 @@ func _process(delta: float) -> void:
 		_play("wall")
 
 	# Paddles
-	if ball_vel.y > 0.0 and _ball_touches(player_x, PLAYER_Y):
+	if ball_vel.y > 0.0 and _ball_touches(player_x, PLAYER_Y, _player_width()):
 		_on_player_return()
-		_bounce(player_x, PLAYER_Y, -1.0)
+		_bounce(player_x, PLAYER_Y, -1.0, _player_width())
 		_burst(ball_pos, COLOR_PLAYER, 14)
 		_play("hit_player", _rally_pitch())
-	elif ball_vel.y < 0.0 and _ball_touches(ai_x, AI_Y):
-		_bounce(ai_x, AI_Y, 1.0)
+	elif ball_vel.y < 0.0 and _ball_touches(ai_x, AI_Y, _ai_width()):
+		_bounce(ai_x, AI_Y, 1.0, _ai_width())
 		_burst(ball_pos, COLOR_AI, 14)
 		_play("hit_cpu", _rally_pitch())
+
+	# Shield upgrade: a barrier behind you that eats one goal per charge.
+	if shields > 0 and ball_vel.y > 0.0 and ball_pos.y > SHIELD_Y - BALL_R:
+		shields -= 1
+		ball_vel.y = -absf(ball_vel.y)
+		ball_pos.y = SHIELD_Y - BALL_R
+		_burst(ball_pos, Color("#4cc9f0"), 30)
+		_popup("SHIELD!", Vector2(W / 2.0, H - 260.0), Color("#4cc9f0"))
+		_play("wall")
+		shake = 0.15
 
 	# Scoring
 	if ball_pos.y > H + BALL_R:
 		_burst(Vector2(ball_pos.x, H - 10.0), COLOR_AI, 40)
 		score_ai += 1
+		hearts -= 1
 		if combo >= 3:
 			_popup("COMBO LOST", Vector2(W / 2.0, H - 260.0), Color.WHITE)
 		combo = 0
@@ -195,11 +262,11 @@ func _process(delta: float) -> void:
 	elif ball_pos.y < -BALL_R:
 		_burst(Vector2(ball_pos.x, 10.0), COLOR_PLAYER, 40)
 		score_player += 1
-		var bonus := 5 + combo * 2
+		var bonus := _scaled(5 + combo * 2)
 		points += bonus
 		_popup("POINT! +%d" % bonus, Vector2(W / 2.0, 220.0), COLOR_PLAYER)
 		_after_point(-1.0)
-		_play("win" if game_over else "score_player")
+		_play("win" if picking else "score_player")
 
 	queue_redraw()
 
@@ -213,7 +280,7 @@ func _move_player(delta: float) -> void:
 		player_x += axis * KEY_SPEED * delta
 	elif touch_target >= 0.0:
 		player_x = move_toward(player_x, touch_target, FOLLOW_SPEED * delta)
-	player_x = clampf(player_x, PADDLE_SIZE.x / 2.0, W - PADDLE_SIZE.x / 2.0)
+	player_x = clampf(player_x, _player_width() / 2.0, W - _player_width() / 2.0)
 
 
 func _move_ai(delta: float) -> void:
@@ -221,18 +288,18 @@ func _move_ai(delta: float) -> void:
 	var goal := W / 2.0
 	if ball_vel.y < 0.0:
 		goal = ball_pos.x
-	ai_x = move_toward(ai_x, goal, AI_SPEED * delta)
-	ai_x = clampf(ai_x, PADDLE_SIZE.x / 2.0, W - PADDLE_SIZE.x / 2.0)
+	ai_x = move_toward(ai_x, goal, _ai_speed() * delta)
+	ai_x = clampf(ai_x, _ai_width() / 2.0, W - _ai_width() / 2.0)
 
 
-func _ball_touches(paddle_x: float, paddle_y: float) -> bool:
+func _ball_touches(paddle_x: float, paddle_y: float, width: float) -> bool:
 	return absf(ball_pos.y - paddle_y) <= PADDLE_SIZE.y / 2.0 + BALL_R \
-		and absf(ball_pos.x - paddle_x) <= PADDLE_SIZE.x / 2.0 + BALL_R
+		and absf(ball_pos.x - paddle_x) <= width / 2.0 + BALL_R
 
 
-func _bounce(paddle_x: float, paddle_y: float, dir: float) -> void:
+func _bounce(paddle_x: float, paddle_y: float, dir: float, width: float) -> void:
 	# Where the ball hits the paddle decides the angle: edges send it wide.
-	var offset := clampf((ball_pos.x - paddle_x) / (PADDLE_SIZE.x / 2.0), -1.0, 1.0)
+	var offset := clampf((ball_pos.x - paddle_x) / (width / 2.0), -1.0, 1.0)
 	var angle := deg_to_rad(MAX_BOUNCE_ANGLE) * offset
 	var speed := minf(ball_vel.length() * SPEED_UP, MAX_SPEED)
 	ball_vel = Vector2(sin(angle), cos(angle) * dir) * speed
@@ -245,7 +312,8 @@ func _bounce(paddle_x: float, paddle_y: float, dir: float) -> void:
 
 func _launch() -> void:
 	var angle := randf_range(-0.5, 0.5)
-	ball_vel = Vector2(sin(angle), cos(angle) * serve_dir) * START_SPEED
+	var speed := minf(START_SPEED + 25.0 * (stage - 1), 1000.0)
+	ball_vel = Vector2(sin(angle), cos(angle) * serve_dir) * speed
 
 
 func _after_point(next_serve_dir: float) -> void:
@@ -258,25 +326,129 @@ func _after_point(next_serve_dir: float) -> void:
 	shake = 0.25
 	pulse = 1.0
 	hue_shift += 0.17
-	if score_player >= WIN_SCORE or score_ai >= WIN_SCORE:
+	if hearts <= 0:
 		game_over = true
+		input_lock = 0.8
 		_set_music_volume(MUSIC_VOLUME_DB - 14.0)
-		if points > best:
-			best = points
-			new_best = true
+		if points > best or stage > best_stage:
+			new_best = points > best
+			best = maxi(best, points)
+			best_stage = maxi(best_stage, stage)
 			_save_best()
+	elif score_player >= STAGE_WIN:
+		_clear_stage()
 
 
 func _restart() -> void:
-	score_player = 0
-	score_ai = 0
+	# A fresh run: back to stage 1 with no upgrades.
 	points = 0
 	combo = 0
 	new_best = false
 	game_over = false
-	_after_point(1.0)
-	serve_timer = 1.0
+	stage = 1
+	hearts = START_HEARTS
+	shields = 0
+	levels.clear()
+	_start_stage()
 	_set_music_volume(MUSIC_VOLUME_DB)
+
+
+# --- Roguelike stages and upgrades -------------------------------------------
+
+func _clear_stage() -> void:
+	stage_bonus = _scaled(20 * stage)
+	points += stage_bonus
+	popups.clear()
+	# Offer three different upgrades that aren't maxed out yet.
+	var pool: Array[String] = []
+	for id in UPGRADES:
+		if _can_offer(id):
+			pool.append(id)
+	pool.shuffle()
+	offers.assign(pool.slice(0, 3))
+	pick_index = 0
+	picking = true
+	input_lock = 0.6
+	_set_music_volume(MUSIC_VOLUME_DB - 8.0)
+
+
+func _can_offer(id: String) -> bool:
+	if id == "heart":
+		return hearts < MAX_HEARTS
+	if id == "shield":
+		return shields < MAX_SHIELDS
+	return levels.get(id, 0) < UPGRADES[id][2]
+
+
+func _card_rects() -> Array[Rect2]:
+	var rects: Array[Rect2] = []
+	var center := screen / 2.0
+	for i in offers.size():
+		if landscape:
+			var size := Vector2(360, 300)
+			rects.append(Rect2(center + Vector2((i - 1) * 400.0, 60.0) - size / 2.0, size))
+		else:
+			var size := Vector2(560, 190)
+			rects.append(Rect2(center + Vector2(0.0, -110.0 + i * 230.0) - size / 2.0, size))
+	return rects
+
+
+func _card_at(point: Vector2) -> int:
+	var rects := _card_rects()
+	for i in rects.size():
+		if rects[i].has_point(point):
+			return i
+	return -1
+
+
+func _pick(index: int) -> void:
+	if input_lock > 0.0 or index < 0 or index >= offers.size():
+		return
+	var id := offers[index]
+	match id:
+		"heart":
+			hearts += 1
+		"shield":
+			shields += 1
+		_:
+			levels[id] = levels.get(id, 0) + 1
+	picking = false
+	stage += 1
+	_start_stage()
+	_set_music_volume(MUSIC_VOLUME_DB)
+
+
+func _start_stage() -> void:
+	score_player = 0
+	score_ai = 0
+	_after_point(1.0)
+	serve_timer = 1.2
+	if _is_boss():
+		_popup("STAGE %d - BOSS!" % stage, Vector2(W / 2.0, H / 2.0 + 260.0), COLOR_AI)
+	else:
+		_popup("STAGE %d" % stage, Vector2(W / 2.0, H / 2.0 + 260.0), Color.WHITE)
+
+
+func _is_boss() -> bool:
+	return stage % BOSS_EVERY == 0
+
+
+func _player_width() -> float:
+	return PADDLE_SIZE.x + 32.0 * levels.get("wide", 0)
+
+
+func _ai_width() -> float:
+	return PADDLE_SIZE.x * (1.6 if _is_boss() else 1.0)
+
+
+func _ai_speed() -> float:
+	var speed := minf(AI_SPEED + 50.0 * (stage - 1), 1100.0)
+	return speed * pow(0.85, levels.get("slow", 0))
+
+
+func _scaled(value: int) -> int:
+	# Multiplier upgrade: +50% points per level.
+	return int(round(value * (1.0 + 0.5 * levels.get("mult", 0))))
 
 
 # --- Combo and points --------------------------------------------------------
@@ -285,9 +457,10 @@ func _on_player_return() -> void:
 	# Each return in a row is worth one more point; a middle hit doubles it.
 	combo += 1
 	var gain := combo
-	var offset := absf(ball_pos.x - player_x) / (PADDLE_SIZE.x / 2.0)
+	var offset := absf(ball_pos.x - player_x) / (_player_width() / 2.0)
 	var at := Vector2(player_x, PLAYER_Y - 90.0)
-	if offset <= PERFECT_ZONE:
+	gain = _scaled(gain)
+	if offset <= PERFECT_ZONE + 0.12 * levels.get("perfect", 0):
 		gain *= 2
 		_popup("PERFECT +%d" % gain, at, _rainbow(0.0).lightened(0.3))
 		_burst(ball_pos, Color.WHITE, 24)
@@ -310,14 +483,17 @@ func _load_best() -> void:
 	var cfg := ConfigFile.new()
 	if cfg.load(SAVE_PATH) != OK:
 		return
-	# Version 1 is the first format; migrate older versions here when it changes.
+	# Version 1 only stored best points; best_stage was added in version 2,
+	# so older saves simply start it at 0.
 	best = int(cfg.get_value("stats", "best", 0))
+	best_stage = int(cfg.get_value("stats", "best_stage", 0))
 
 
 func _save_best() -> void:
 	var cfg := ConfigFile.new()
 	cfg.set_value("meta", "save_version", SAVE_VERSION)
 	cfg.set_value("stats", "best", best)
+	cfg.set_value("stats", "best_stage", best_stage)
 	cfg.save(SAVE_PATH)
 
 
@@ -455,8 +631,9 @@ func _draw_block(rect: Rect2, color: Color) -> void:
 	draw_rect(rect, color)
 
 
-func _draw_paddle(x: float, y: float, color: Color) -> void:
-	var rect := Rect2(_snap(Vector2(x, y) - PADDLE_SIZE / 2.0), PADDLE_SIZE)
+func _draw_paddle(x: float, y: float, width: float, color: Color) -> void:
+	var size := Vector2(width, PADDLE_SIZE.y)
+	var rect := Rect2(_snap(Vector2(x, y) - size / 2.0), size)
 	_draw_block(rect, color)
 	draw_rect(Rect2(rect.position, Vector2(rect.size.x, PX)), color.lightened(0.45))
 	draw_rect(Rect2(rect.position + Vector2(0, rect.size.y - PX), Vector2(rect.size.x, PX)),
@@ -480,6 +657,37 @@ func _draw_ball(center: Vector2, color: Color, outline: bool) -> void:
 					draw_rect(cell.grow(PX / 2.0), OUTLINE)
 				else:
 					draw_rect(cell, color)
+
+
+func _draw_heart(origin: Vector2, cell: float, color: Color) -> void:
+	for row in HEART_SHAPE.size():
+		for col in HEART_SHAPE[row].length():
+			if HEART_SHAPE[row][col] == "#":
+				draw_rect(Rect2(origin + Vector2(col, row) * cell, Vector2(cell, cell)), color)
+
+
+func _draw_cards() -> void:
+	var font := ThemeDB.fallback_font
+	draw_rect(Rect2(Vector2.ZERO, screen), Color(0, 0, 0, 0.55))
+	var cy := screen.y / 2.0
+	var top := cy - (250.0 if landscape else 400.0)
+	_draw_label("STAGE %d CLEAR!" % stage, top, 64, _rainbow(0.0).lightened(0.3))
+	_draw_label("+%d bonus  -  pick an upgrade" % stage_bonus, top + 64.0, 36, Color.WHITE)
+	var rects := _card_rects()
+	for i in rects.size():
+		var rect := rects[i]
+		var id := offers[i]
+		var info: Array = UPGRADES[id]
+		if i == pick_index:
+			draw_rect(rect.grow(PX * 1.5), _rainbow(0.0))
+		_draw_block(rect, Color(0.08, 0.04, 0.16, 0.95))
+		draw_string(font, Vector2(rect.position.x, rect.position.y + rect.size.y * 0.4), info[0],
+			HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 40, _rainbow(i * 0.33).lightened(0.3))
+		draw_string(font, Vector2(rect.position.x, rect.position.y + rect.size.y * 0.66), info[1],
+			HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 28, Color.WHITE)
+		var owned: int = hearts if id == "heart" else (shields if id == "shield" else levels.get(id, 0))
+		draw_string(font, Vector2(rect.position.x, rect.position.y + rect.size.y * 0.88),
+			"have %d" % owned, HORIZONTAL_ALIGNMENT_CENTER, rect.size.x, 22, Color(1, 1, 1, 0.6))
 
 
 func _draw_number(value: int, center: Vector2, cell: float, color: Color) -> void:
@@ -535,12 +743,16 @@ func _draw() -> void:
 		x += 48.0
 
 	# Paddles, sparks and ball
-	_draw_paddle(ai_x, AI_Y, COLOR_AI)
-	_draw_paddle(player_x, PLAYER_Y, COLOR_PLAYER)
+	_draw_paddle(ai_x, AI_Y, _ai_width(), COLOR_AI)
+	_draw_paddle(player_x, PLAYER_Y, _player_width(), COLOR_PLAYER)
+	# Shield charges: stacked glowing bars behind the player.
+	for i in shields:
+		var y := SHIELD_Y + i * PX * 1.5
+		draw_rect(Rect2(0, y, W, PX / 2.0), Color("#4cc9f0", 0.85 - i * 0.25))
 	for spark in sparks:
 		var size := PX * clampf(spark.life * 2.0, 0.5, 1.0)
 		draw_rect(Rect2(_snap(spark.pos), Vector2(size, size)), spark.color)
-	if not game_over:
+	if not game_over and not picking:
 		for i in range(trail.size() - 1, 0, -1):
 			var fade := 1.0 - float(i) / TRAIL_LEN
 			draw_rect(Rect2(trail[i] - Vector2(PX, PX), Vector2(PX, PX) * 2.0),
@@ -557,11 +769,18 @@ func _draw() -> void:
 	# Points (opposite corner to the music button) and combo
 	var cy := screen.y / 2.0
 	var font := ThemeDB.fallback_font
-	var pts_x := screen.x - 260.0 if landscape else 10.0
-	draw_rect(Rect2(pts_x, 14, 250, 50), Color(0, 0, 0, 0.55))
-	draw_string(font, Vector2(pts_x + 14.0, 50.0), "PTS %d  BEST %d" % [points, best],
-		HORIZONTAL_ALIGNMENT_LEFT, 230, 26, Color(1, 1, 1, 0.9))
-	if combo >= 2 and not game_over:
+	# Stage, points and hearts share one box.
+	var hud_x := screen.x - 390.0 if landscape else 10.0
+	draw_rect(Rect2(hud_x, 14, 380, 50), Color(0, 0, 0, 0.55))
+	draw_string(font, Vector2(hud_x + 14.0, 50.0), "ST %d  PTS %d" % [stage, points],
+		HORIZONTAL_ALIGNMENT_LEFT, 220, 26, Color(1, 1, 1, 0.9))
+	var heart_x := hud_x + 226.0
+	for i in mini(hearts, 5):
+		_draw_heart(Vector2(heart_x + i * 30.0, 28.0), 3.0, COLOR_AI)
+	if hearts > 5:
+		draw_string(font, Vector2(heart_x + 150.0, 50.0), "+%d" % (hearts - 5),
+			HORIZONTAL_ALIGNMENT_LEFT, 40, 22, COLOR_AI)
+	if combo >= 2 and not game_over and not picking:
 		var size := 36 + mini(combo, 20) * 2
 		_draw_label("COMBO x%d" % combo, cy + (220.0 if landscape else 260.0), size, _rainbow(0.0).lightened(0.2 + 0.4 * (1.0 - _trip())))
 	for popup in popups:
@@ -578,14 +797,15 @@ func _draw() -> void:
 		HORIZONTAL_ALIGNMENT_CENTER, mute.size.x, 28, Color(1, 1, 1, 0.8))
 
 	# Messages
-	if game_over:
-		var msg := "YOU WIN!" if score_player > score_ai else "CPU WINS"
-		_draw_label(msg, cy - 230.0, 72, _rainbow(0.0).lightened(0.3))
-		_draw_label("%d POINTS" % points, cy - 140.0, 48, Color.WHITE)
+	if picking:
+		_draw_cards()
+	elif game_over:
+		_draw_label("RUN OVER", cy - 230.0, 72, _rainbow(0.0).lightened(0.3))
+		_draw_label("STAGE %d  -  %d POINTS" % [stage, points], cy - 140.0, 44, Color.WHITE)
 		if new_best:
 			_draw_label("NEW BEST!", cy + 200.0, 56, _rainbow(0.5).lightened(0.3))
 		else:
-			_draw_label("BEST %d" % best, cy + 200.0, 40, Color.WHITE)
+			_draw_label("BEST %d  -  STAGE %d" % [best, best_stage], cy + 200.0, 40, Color.WHITE)
 		_draw_label("Tap to play again", cy + 300.0, 40, Color.WHITE)
 	elif not has_touched:
 		_draw_label("Drag to move", field_rect.end.y - (120.0 if landscape else 220.0), 40, Color.WHITE)
