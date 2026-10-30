@@ -2,6 +2,8 @@ extends Node2D
 ## Vertical Pong built for a phone held upright.
 ## You are the yellow paddle at the bottom: drag anywhere to move it.
 ## Arrow keys also work on a computer. First to 7 wins.
+## Every return builds a combo worth more points; middle-of-paddle hits are
+## PERFECT and score double. Beat your best: it is saved between games.
 
 const W := 720.0
 const H := 1280.0
@@ -26,6 +28,12 @@ const MUTE_RECT := Rect2(W - 230.0, 0.0, 230.0, 70.0)
 const COLOR_PLAYER := Color("#ffd166")
 const COLOR_AI := Color("#ef476f")
 const COLOR_DIM := Color(1, 1, 1, 0.18)
+
+# --- Combo and points --------------------------------------------------------
+const PERFECT_ZONE := 0.25  # middle quarter of the paddle (as a fraction of half-width)
+const COMBO_FOR_MAX_TRIP := 15  # combo at which the visuals go fully wild
+const SAVE_PATH := "user://save.cfg"
+const SAVE_VERSION := 1
 
 # --- 8-bit art ---------------------------------------------------------------
 const PX := 8.0  # one "pixel" of art, in screen pixels
@@ -66,6 +74,13 @@ var hue_shift := 0.0
 var shake := 0.0
 var trail: Array[Vector2] = []
 var sparks := []
+var art_clock := 0.0
+var popups := []
+
+var points := 0
+var best := 0
+var combo := 0
+var new_best := false
 
 
 func _ready() -> void:
@@ -78,6 +93,7 @@ func _ready() -> void:
 	backdrop.mouse_filter = Control.MOUSE_FILTER_IGNORE
 	backdrop.show_behind_parent = true
 	add_child(backdrop)
+	_load_best()
 
 	for key in SFX_NAMES:
 		var player := AudioStreamPlayer.new()
@@ -145,6 +161,7 @@ func _process(delta: float) -> void:
 
 	# Paddles
 	if ball_vel.y > 0.0 and _ball_touches(player_x, PLAYER_Y):
+		_on_player_return()
 		_bounce(player_x, PLAYER_Y, -1.0)
 		_burst(ball_pos, COLOR_PLAYER, 14)
 		_play("hit_player", _rally_pitch())
@@ -157,11 +174,17 @@ func _process(delta: float) -> void:
 	if ball_pos.y > H + BALL_R:
 		_burst(Vector2(ball_pos.x, H - 10.0), COLOR_AI, 40)
 		score_ai += 1
+		if combo >= 3:
+			_popup("COMBO LOST", Vector2(W / 2.0, H - 260.0), Color.WHITE)
+		combo = 0
 		_after_point(1.0)
 		_play("lose" if game_over else "score_cpu")
 	elif ball_pos.y < -BALL_R:
 		_burst(Vector2(ball_pos.x, 10.0), COLOR_PLAYER, 40)
 		score_player += 1
+		var bonus := 5 + combo * 2
+		points += bonus
+		_popup("POINT! +%d" % bonus, Vector2(W / 2.0, 220.0), COLOR_PLAYER)
 		_after_point(-1.0)
 		_play("win" if game_over else "score_player")
 
@@ -225,15 +248,64 @@ func _after_point(next_serve_dir: float) -> void:
 	if score_player >= WIN_SCORE or score_ai >= WIN_SCORE:
 		game_over = true
 		_set_music_volume(MUSIC_VOLUME_DB - 14.0)
+		if points > best:
+			best = points
+			new_best = true
+			_save_best()
 
 
 func _restart() -> void:
 	score_player = 0
 	score_ai = 0
+	points = 0
+	combo = 0
+	new_best = false
 	game_over = false
 	_after_point(1.0)
 	serve_timer = 1.0
 	_set_music_volume(MUSIC_VOLUME_DB)
+
+
+# --- Combo and points --------------------------------------------------------
+
+func _on_player_return() -> void:
+	# Each return in a row is worth one more point; a middle hit doubles it.
+	combo += 1
+	var gain := combo
+	var offset := absf(ball_pos.x - player_x) / (PADDLE_SIZE.x / 2.0)
+	var at := Vector2(player_x, PLAYER_Y - 70.0)
+	if offset <= PERFECT_ZONE:
+		gain *= 2
+		_popup("PERFECT +%d" % gain, at, _rainbow(0.0).lightened(0.3))
+		_burst(ball_pos, Color.WHITE, 24)
+		hue_shift += 0.1
+	else:
+		_popup("+%d" % gain, at, COLOR_PLAYER)
+	points += gain
+
+
+func _trip() -> float:
+	# 0 = calm, 1 = full psychedelic. Rises with the combo.
+	return minf(float(combo) / COMBO_FOR_MAX_TRIP, 1.0)
+
+
+func _popup(text: String, at: Vector2, color: Color) -> void:
+	popups.append({"text": text, "pos": at, "life": 0.9, "color": color})
+
+
+func _load_best() -> void:
+	var cfg := ConfigFile.new()
+	if cfg.load(SAVE_PATH) != OK:
+		return
+	# Version 1 is the first format; migrate older versions here when it changes.
+	best = int(cfg.get_value("stats", "best", 0))
+
+
+func _save_best() -> void:
+	var cfg := ConfigFile.new()
+	cfg.set_value("meta", "save_version", SAVE_VERSION)
+	cfg.set_value("stats", "best", best)
+	cfg.save(SAVE_PATH)
 
 
 # --- Audio -----------------------------------------------------------------
@@ -278,11 +350,21 @@ func _on_music_finished() -> void:
 
 func _update_art(delta: float) -> void:
 	art_time += delta
+	var trip := _trip()
+	art_clock += delta * (1.0 + trip * 2.5)
+	music_player.pitch_scale = lerpf(music_player.pitch_scale, 1.0 + trip * 0.12, delta * 2.0)
 	pulse = move_toward(pulse, 0.0, delta * 1.5)
 	shake = maxf(shake - delta, 0.0)
 	var mat := backdrop.material as ShaderMaterial
 	mat.set_shader_parameter("pulse", pulse)
 	mat.set_shader_parameter("hue_shift", hue_shift)
+	mat.set_shader_parameter("clock", art_clock)
+	mat.set_shader_parameter("trip", trip)
+
+	for popup in popups:
+		popup.pos += Vector2(0, -90.0 * delta)
+		popup.life -= delta
+	popups = popups.filter(func(popup): return popup.life > 0.0)
 
 	if ball_vel != Vector2.ZERO:
 		trail.push_front(_snap(ball_pos))
@@ -400,8 +482,23 @@ func _draw() -> void:
 
 	draw_set_transform(Vector2.ZERO)
 
-	# Music toggle (top-right corner)
+	# Points (top-left) and combo
 	var font := ThemeDB.fallback_font
+	draw_rect(Rect2(10, 14, 250, 50), Color(0, 0, 0, 0.55))
+	draw_string(font, Vector2(24, 50.0), "PTS %d  BEST %d" % [points, best],
+		HORIZONTAL_ALIGNMENT_LEFT, 230, 26, Color(1, 1, 1, 0.9))
+	if combo >= 2 and not game_over:
+		var size := 36 + mini(combo, 20) * 2
+		_draw_label("COMBO x%d" % combo, H / 2.0 + 260.0, size, _rainbow(0.0).lightened(0.2 + 0.4 * (1.0 - _trip())))
+	for popup in popups:
+		var c: Color = popup.color
+		c.a = clampf(popup.life * 2.0, 0.0, 1.0)
+		draw_string(font, popup.pos + Vector2(-W / 2.0 + 3, 3), popup.text,
+			HORIZONTAL_ALIGNMENT_CENTER, W, 40, Color(0, 0, 0, c.a))
+		draw_string(font, popup.pos - Vector2(W / 2.0, 0), popup.text,
+			HORIZONTAL_ALIGNMENT_CENTER, W, 40, c)
+
+	# Music toggle (top-right corner)
 	draw_rect(Rect2(MUTE_RECT.position + Vector2(20, 14), Vector2(MUTE_RECT.size.x - 30, 50)),
 		Color(0, 0, 0, 0.55))
 	draw_string(font, Vector2(MUTE_RECT.position.x, 50.0),
@@ -412,6 +509,11 @@ func _draw() -> void:
 	if game_over:
 		var msg := "YOU WIN!" if score_player > score_ai else "CPU WINS"
 		_draw_label(msg, H / 2.0 - 230.0, 72, _rainbow(0.0).lightened(0.3))
-		_draw_label("Tap to play again", H / 2.0 + 280.0, 40, Color.WHITE)
+		_draw_label("%d POINTS" % points, H / 2.0 - 140.0, 48, Color.WHITE)
+		if new_best:
+			_draw_label("NEW BEST!", H / 2.0 + 200.0, 56, _rainbow(0.5).lightened(0.3))
+		else:
+			_draw_label("BEST %d" % best, H / 2.0 + 200.0, 40, Color.WHITE)
+		_draw_label("Tap to play again", H / 2.0 + 300.0, 40, Color.WHITE)
 	elif not has_touched:
 		_draw_label("Drag to move", H - 220.0, 40, Color.WHITE)

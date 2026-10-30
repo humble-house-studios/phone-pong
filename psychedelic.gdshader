@@ -11,6 +11,10 @@ uniform float pulse = 0.0;
 // Rotates the whole palette; the game nudges it on each point.
 uniform float hue_shift = 0.0;
 uniform float brightness = 0.42;
+// Animation clock from the game, so it can speed up without jumping.
+uniform float clock = 0.0;
+// 0..1: how wild the visuals get. Driven by the player's combo.
+uniform float trip = 0.0;
 
 vec3 palette(float t) {
 	// Cosine rainbow: hot pink, orange, lime, cyan, violet.
@@ -27,7 +31,7 @@ float bayer2(vec2 cell) {
 void fragment() {
 	vec2 cell = floor(UV * screen_size / pixel_size);
 	vec2 p = cell * pixel_size / screen_size.x;  // square pixels, 0..1 across
-	float t = TIME * (0.35 + pulse * 0.6);
+	float t = clock * (0.35 + pulse * 0.6);
 
 	vec2 c = vec2(0.5 + 0.35 * sin(t * 0.7), 0.9 + 0.6 * cos(t * 0.5));
 	float v = sin(p.x * 9.0 + t);
@@ -36,9 +40,10 @@ void fragment() {
 	v += sin(length(p - c) * 14.0 - t * 2.0);
 	v = v * 0.125 + 0.5;  // roughly 0..1
 
-	float band = floor(v * bands + bayer2(cell)) / bands;
-	vec3 col = palette(band + hue_shift + TIME * 0.05);
-	col *= brightness + pulse * 0.35;
+	float b = bands + floor(trip * 6.0);
+	float band = floor(v * b + bayer2(cell)) / b;
+	vec3 col = palette(band + hue_shift + clock * (0.05 + trip * 0.15));
+	col *= brightness + trip * 0.1 + pulse * 0.35;
 
 	COLOR = vec4(col, 1.0);
 }
