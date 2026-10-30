@@ -61,6 +61,14 @@ game repo, including Yes And.
 - After each change, give Samuel the play link and one line on what changed.
   He may need to pull down to refresh if Safari shows a cached version.
 
+## Publishing a change
+- Only pushes to `main` rebuild the play link. When a change is done, commit it
+  and push it to `main` (merge your working branch into `main` and push), unless
+  Samuel asks for a separate branch. If pushing to `main` is blocked, open a pull
+  request and give him the link with "tap Merge pull request".
+- Then watch the Actions run (`gh run list`, `gh run view`) until it succeeds,
+  and send him https://humble-house-studios.github.io/phone-pong/
+
 ## Working with Samuel
 - He works from his phone and is new to code: explain results in plain words,
   keep replies short, and handle git, builds and fixes yourself.
