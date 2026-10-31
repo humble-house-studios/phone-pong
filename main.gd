@@ -163,6 +163,8 @@ var hud_tap_time := 0.0
 ## reaches Pong while you sit at it, so polling Input would move the paddle
 ## while you walk around.
 var dir_strength := {}
+## A controller has been used: the title shows its buttons.
+var pad_used := false
 const DIR_ACTIONS := ["ui_left", "ui_right", "ui_up", "ui_down"]
 
 var landscape := false
@@ -261,6 +263,10 @@ func _input(event: InputEvent) -> void:
 	for action in DIR_ACTIONS:
 		if event.is_action(action):
 			dir_strength[action] = event.get_action_strength(action)
+	if event is InputEventJoypadButton or event is InputEventJoypadMotion:
+		pad_used = true
+	elif event is InputEventScreenTouch or event is InputEventMouseButton:
+		pad_used = false
 	if event is InputEventJoypadButton and event.pressed:
 		_start_music_once()
 		if event.button_index == JOY_BUTTON_Y:
@@ -636,8 +642,27 @@ func _draw_title() -> void:
 		_draw_block(rects[i], Color(0.08, 0.04, 0.16, 0.95))
 	_draw_fitted("PLAY", rects[0], 0.68, 64, _rainbow(0.3).lightened(0.4))
 	_draw_fitted("MUSIC: %s" % ("ON" if music_on else "OFF"), rects[1], 0.64, 34, Color.WHITE)
-	if not landscape:
+	if pad_used:
+		_draw_pad_row(rects[1].end.y + 80.0)
+	elif not landscape:
 		_draw_label("Drag to move. Beat bosses for relics.", rects[1].end.y + 90.0, 28, Color(1, 1, 1, 0.8))
+
+
+## Controller buttons on the title: [A] PLAY  [Y] MUSIC  [stick] MOVE.
+func _draw_pad_row(y: float) -> void:
+	var font := ThemeDB.fallback_font
+	var items := [["A", Color(0.3, 0.75, 0.35), "PICK"], ["Y", Color(0.95, 0.78, 0.2), "MUSIC"], ["L", Color(0.3, 0.3, 0.36), "MOVE"]]
+	var size := 28
+	var width := 0.0
+	for it in items:
+		width += 44.0 + font.get_string_size(it[2], HORIZONTAL_ALIGNMENT_LEFT, -1, size).x + 36.0
+	draw_rect(Rect2(0, y - 34.0, screen.x, 68.0), Color(0, 0, 0, 0.6))
+	var x := (screen.x - width) / 2.0
+	for it in items:
+		draw_circle(Vector2(x + 18.0, y), 20.0, it[1])
+		draw_string(font, Vector2(x, y + 10.0), it[0], HORIZONTAL_ALIGNMENT_CENTER, 36.0, 26, Color.WHITE)
+		draw_string(font, Vector2(x + 44.0, y + 10.0), it[2], HORIZONTAL_ALIGNMENT_LEFT, -1, size, Color.WHITE)
+		x += 44.0 + font.get_string_size(it[2], HORIZONTAL_ALIGNMENT_LEFT, -1, size).x + 36.0
 
 
 # --- Test menu ---------------------------------------------------------------
