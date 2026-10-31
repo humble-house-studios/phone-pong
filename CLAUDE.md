@@ -36,6 +36,9 @@ game repo, including Yes And.
   or handle both event types. Keyboard and gamepad support is a bonus for Steam.
 - Map gameplay actions in the Input Map (`ui_*` or named actions); don't
   hard-code keys in scripts.
+- Controller: stick / D-pad steer the paddle and menus, A or Start picks, Y
+  toggles music. Directions are tracked from events (`dir_strength`), not
+  `Input` polling: in the office the pad only reaches Pong while you sit at it.
 
 ## Saves and data
 - Save only to `user://`. Use `ConfigFile` or JSON, include a `save_version`

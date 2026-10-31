@@ -158,6 +158,13 @@ var cheated := false
 var hud_taps := 0
 var hud_tap_time := 0.0
 
+## Arrow keys / D-pad / left stick, tracked from the events this game
+## receives (action -> strength). Inside the office the controller only
+## reaches Pong while you sit at it, so polling Input would move the paddle
+## while you walk around.
+var dir_strength := {}
+const DIR_ACTIONS := ["ui_left", "ui_right", "ui_up", "ui_down"]
+
 var landscape := false
 var screen := Vector2(W, H)  # visible area in screen pixels
 var field_rect := Rect2(0, 0, W, H)  # where the field sits on screen
@@ -165,6 +172,7 @@ var field_xform := Transform2D.IDENTITY  # field coordinates -> screen
 
 
 func _ready() -> void:
+	_add_pad_actions()
 	# Swirling pixel plasma drawn behind everything else.
 	var mat := ShaderMaterial.new()
 	mat.shader = load("res://psychedelic.gdshader")
@@ -247,30 +255,71 @@ func _input(event: InputEvent) -> void:
 		if test_menu and _test_item_at(local_pos) >= 0:
 			test_index = _test_item_at(local_pos)
 
-	# Keyboard / gamepad for the menus and restarting.
+	# Keyboard / gamepad for the menus and restarting. A stick sends a stream
+	# of events while held, so menus move once per push (see _dir_pressed).
+	var was := dir_strength.duplicate()
+	for action in DIR_ACTIONS:
+		if event.is_action(action):
+			dir_strength[action] = event.get_action_strength(action)
+	if event is InputEventJoypadButton and event.pressed:
+		_start_music_once()
+		if event.button_index == JOY_BUTTON_Y:
+			_toggle_music()
+			return
 	if title:
-		if event.is_action_pressed("ui_up") or event.is_action_pressed("ui_down"):
+		if _dir_pressed(event, "ui_up", was) or _dir_pressed(event, "ui_down", was):
 			title_index = 1 - title_index
-		elif event.is_action_pressed("ui_accept"):
+		elif _accept_pressed(event):
 			_title_action(title_index)
 	elif test_menu:
-		if event.is_action_pressed("ui_up"):
+		if _dir_pressed(event, "ui_up", was):
 			test_index = posmod(test_index - 1, TEST_ITEMS.size())
-		elif event.is_action_pressed("ui_down"):
+		elif _dir_pressed(event, "ui_down", was):
 			test_index = posmod(test_index + 1, TEST_ITEMS.size())
-		elif event.is_action_pressed("ui_accept"):
+		elif _accept_pressed(event):
 			_test_action(test_index)
 		elif event.is_action_pressed("ui_cancel"):
 			test_menu = false
 	elif picking:
-		if event.is_action_pressed("ui_left") or event.is_action_pressed("ui_up"):
+		if _dir_pressed(event, "ui_left", was) or _dir_pressed(event, "ui_up", was):
 			pick_index = posmod(pick_index - 1, offers.size())
-		elif event.is_action_pressed("ui_right") or event.is_action_pressed("ui_down"):
+		elif _dir_pressed(event, "ui_right", was) or _dir_pressed(event, "ui_down", was):
 			pick_index = posmod(pick_index + 1, offers.size())
-		elif event.is_action_pressed("ui_accept"):
+		elif _accept_pressed(event):
 			_pick(pick_index)
-	elif game_over and event.is_action_pressed("ui_accept") and input_lock <= 0.0:
+	elif game_over and _accept_pressed(event) and input_lock <= 0.0:
 		_restart()
+
+
+## A direction just went down (a key or D-pad press, or the stick crossing
+## half-way), not a repeat while it's held.
+func _dir_pressed(event: InputEvent, action: String, was: Dictionary) -> bool:
+	if not event.is_action(action):
+		return false
+	if event is InputEventJoypadMotion:
+		return dir_strength.get(action, 0.0) > 0.5 and was.get(action, 0.0) <= 0.5
+	return event.is_action_pressed(action)
+
+
+## A (or Start) on a controller, Enter/Space on a keyboard.
+func _accept_pressed(event: InputEvent) -> bool:
+	if event is InputEventJoypadButton and event.pressed and event.button_index == JOY_BUTTON_START:
+		return true
+	return event.is_action_pressed("ui_accept")
+
+
+## Controller buttons for the menus: A accepts, B backs out. The InputMap
+## may be shared (Pong runs inside the office), so only add what's missing.
+func _add_pad_actions() -> void:
+	for pair in [["ui_accept", JOY_BUTTON_A], ["ui_cancel", JOY_BUTTON_B]]:
+		var have := false
+		for e in InputMap.action_get_events(pair[0]):
+			if e is InputEventJoypadButton and e.button_index == pair[1]:
+				have = true
+		if not have:
+			var ev := InputEventJoypadButton.new()
+			ev.button_index = pair[1]
+			InputMap.action_add_event(pair[0], ev)
 
 
 func _process(delta: float) -> void:
@@ -365,8 +414,8 @@ func _process(delta: float) -> void:
 
 func _move_player(delta: float) -> void:
 	# Sideways, the paddle runs up and down the screen.
-	var axis := Input.get_axis("ui_down", "ui_up") if landscape \
-		else Input.get_axis("ui_left", "ui_right")
+	var axis: float = dir_strength.get("ui_up", 0.0) - dir_strength.get("ui_down", 0.0) if landscape \
+		else dir_strength.get("ui_right", 0.0) - dir_strength.get("ui_left", 0.0)
 	if axis != 0.0:
 		touch_target = -1.0
 		player_x += axis * KEY_SPEED * delta
