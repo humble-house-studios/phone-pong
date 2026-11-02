@@ -12,6 +12,9 @@ extends Node2D
 ## screen the field is simply drawn rotated, and input is rotated back.
 ## Every return builds a combo worth more points; middle-of-paddle hits are
 ## PERFECT and score double. Beat your best: it is saved between games.
+## Aim with where the ball meets the paddle (edges send it wide); flick the
+## paddle as you hit to SMASH (faster, curved toward the flick): the skill
+## that keeps later stages winnable.
 
 const W := 720.0
 const H := 1280.0
@@ -23,6 +26,12 @@ const START_SPEED := 620.0
 const SPEED_UP := 1.06
 const MAX_SPEED := 1500.0
 const AI_SPEED := 360.0  # stage 1; grows each stage
+const AI_SPEED_STEP := 28.0
+const AI_SPEED_MAX := 820.0
+## SMASH: the paddle moving at least this fast (field px/s) when it hits.
+const SMASH_SPEED := 700.0
+const SMASH_BOOST := 1.3
+const SMASH_ANGLE := 15.0
 const KEY_SPEED := 900.0
 const FOLLOW_SPEED := 2400.0
 const MAX_BOUNCE_ANGLE := 60.0
@@ -130,6 +139,11 @@ var popups := []
 var points := 0
 var best := 0
 var combo := 0
+## How fast the paddle is moving (field px/s, smoothed), for SMASH.
+var paddle_vel := 0.0
+var _last_player_x := W / 2.0
+## First-run tips shown this run (aim, smash).
+var tips_done := {}
 var new_best := false
 
 var stage := 1
@@ -375,6 +389,8 @@ func _process(delta: float) -> void:
 		_bounce(player_x, PLAYER_Y, -1.0, _player_width())
 		_burst(ball_pos, COLOR_PLAYER, 14)
 		_play("hit_player", _rally_pitch())
+		if absf(paddle_vel) >= SMASH_SPEED:
+			_smash()
 	elif ball_vel.y < 0.0 and _ball_touches(ai_x, AI_Y, _ai_width()):
 		_bounce(ai_x, AI_Y, 1.0, _ai_width())
 		_burst(ball_pos, COLOR_AI, 14)
@@ -428,6 +444,9 @@ func _move_player(delta: float) -> void:
 	elif touch_target >= 0.0:
 		player_x = move_toward(player_x, touch_target, FOLLOW_SPEED * delta)
 	player_x = clampf(player_x, _player_width() / 2.0, W - _player_width() / 2.0)
+	if delta > 0.0:
+		paddle_vel = lerpf(paddle_vel, (player_x - _last_player_x) / delta, 0.5)
+	_last_player_x = player_x
 
 
 func _move_ai(delta: float) -> void:
@@ -645,7 +664,8 @@ func _draw_title() -> void:
 	if pad_used:
 		_draw_pad_row(rects[1].end.y + 80.0)
 	elif not landscape:
-		_draw_label("Drag to move. Beat bosses for relics.", rects[1].end.y + 90.0, 28, Color(1, 1, 1, 0.8))
+		_draw_label("Drag to move. Edges aim. Flick to SMASH.", rects[1].end.y + 90.0, 28, Color(1, 1, 1, 0.8))
+		_draw_label("First to 3 clears a stage. Beat bosses for relics.", rects[1].end.y + 130.0, 24, Color(1, 1, 1, 0.6))
 
 
 ## Controller buttons on the title: [A] PLAY  [Y] MUSIC  [stick] MOVE.
@@ -780,7 +800,7 @@ func _ai_width() -> float:
 
 
 func _ai_speed() -> float:
-	var speed := minf(AI_SPEED + 50.0 * (stage - 1), 1100.0)
+	var speed := minf(AI_SPEED + AI_SPEED_STEP * (stage - 1), AI_SPEED_MAX)
 	return speed * pow(0.85, levels.get("slow", 0))
 
 
@@ -809,6 +829,28 @@ func _on_player_return() -> void:
 	else:
 		_popup("+%d" % gain, at, COLOR_PLAYER)
 	points += gain
+	# New players: how to aim, then how to smash.
+	if best_stage <= 2 and stage <= 2:
+		if combo == 2 and not tips_done.has("aim"):
+			tips_done["aim"] = true
+			_popup("TIP: HIT WITH THE EDGE TO AIM", Vector2(W / 2.0, H / 2.0 + 120.0), Color.WHITE, 2.6)
+		elif combo == 5 and not tips_done.has("smash"):
+			tips_done["smash"] = true
+			_popup("TIP: FLICK AS YOU HIT = SMASH!", Vector2(W / 2.0, H / 2.0 + 120.0), Color.WHITE, 2.6)
+
+
+## A flick as you hit: faster, and curved the way the paddle was moving.
+func _smash() -> void:
+	var dir := signf(paddle_vel)
+	var speed := minf(ball_vel.length() * SMASH_BOOST, MAX_SPEED)
+	var angle := clampf(atan2(ball_vel.x, -ball_vel.y) + deg_to_rad(SMASH_ANGLE) * dir, -deg_to_rad(70.0), deg_to_rad(70.0))
+	ball_vel = Vector2(sin(angle), -cos(angle)) * speed
+	var bonus := _scaled(combo)
+	points += bonus
+	_popup("SMASH! +%d" % bonus, Vector2(player_x, PLAYER_Y - 150.0), Color("#ff5d8f"), 1.0)
+	_burst(ball_pos, Color("#ff5d8f"), 30)
+	shake = maxf(shake, 0.12)
+	tips_done["smash"] = true
 
 
 func _trip() -> float:
